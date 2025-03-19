@@ -37,14 +37,20 @@ check_system_requirements() {
     # Проверка ОЗУ
     local total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     local total_ram_mb=$((total_ram_kb / 1024))
+    local total_ram_gb=$((total_ram_mb / 1024))
+    
+    log "Обнаружено ОЗУ: ${total_ram_mb}MB (${total_ram_gb}GB)"
     
     if [ "$total_ram_mb" -lt "$MIN_RAM_MB" ]; then
-        handle_error "Недостаточно оперативной памяти. Требуется минимум ${MIN_RAM_MB}MB, доступно ${total_ram_mb}MB" 2
+        handle_error "Недостаточно оперативной памяти. Требуется минимум ${MIN_RAM_MB}MB (4GB), доступно ${total_ram_mb}MB" 2
     fi
     
     # Проверка свободного места на диске
     local free_disk_kb=$(df -k . | tail -1 | awk '{print $4}')
-    local free_disk_gb=$((free_disk_kb / 1024 / 1024))
+    local free_disk_mb=$((free_disk_kb / 1024))
+    local free_disk_gb=$((free_disk_mb / 1024))
+    
+    log "Обнаружено свободное место на диске: ${free_disk_mb}MB (${free_disk_gb}GB)"
     
     if [ "$free_disk_gb" -lt "$MIN_DISK_GB" ]; then
         handle_error "Недостаточно места на диске. Требуется минимум ${MIN_DISK_GB}GB, доступно ${free_disk_gb}GB" 3
@@ -334,6 +340,50 @@ validate_solana_key() {
     echo "$PUB_KEY"
 }
 
+# Функция проверки и преобразования размера ОЗУ
+validate_ram_size() {
+    local input_ram="$1"
+    local min_ram="$2"
+    
+    # Проверка, что введено число
+    if ! [[ "$input_ram" =~ ^[0-9]+$ ]]; then
+        echo "Ошибка: Размер ОЗУ должен быть числом."
+        return 1
+    fi
+    
+    # Проверка минимального размера
+    if [ "$input_ram" -lt "$min_ram" ]; then
+        echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram}GB."
+        return 1
+    fi
+    
+    # Возвращаем проверенное значение
+    echo "$input_ram"
+    return 0
+}
+
+# Функция проверки и преобразования размера диска
+validate_disk_size() {
+    local input_disk="$1"
+    local min_disk="$2"
+    
+    # Проверка, что введено число
+    if ! [[ "$input_disk" =~ ^[0-9]+$ ]]; then
+        echo "Ошибка: Размер диска должен быть числом."
+        return 1
+    fi
+    
+    # Проверка минимального размера
+    if [ "$input_disk" -lt "$min_disk" ]; then
+        echo "Ошибка: Размер диска должен быть не менее ${min_disk}GB."
+        return 1
+    fi
+    
+    # Возвращаем проверенное значение
+    echo "$input_disk"
+    return 0
+}
+
 # Основная часть скрипта
 main() {
     log "Начало установки Pop $POP_VERSION..."
@@ -395,23 +445,107 @@ main() {
         
         read -p "Введите вашу реферальную ссылку (если есть, иначе оставьте пустым): " REFERRAL
         
+        # Получение информации о системной памяти
+        local total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        local total_ram_mb=$((total_ram_kb / 1024))
+        local total_ram_gb=$((total_ram_mb / 1024))
+        
         # Запрос размера ОЗУ с проверкой
-        while true; do
-            read -p "Введите размер оперативной памяти (в ГБ, например, 8): " RAM
-            if [[ "$RAM" =~ ^[0-9]+$ ]] && [ "$RAM" -ge 4 ]; then
-                break
+        local min_ram_gb=4
+        local ram_validated=false
+        local ram_attempts=0
+        local max_ram_attempts=3
+        
+        echo "Обнаружено ОЗУ: ${total_ram_gb}GB"
+        echo "Рекомендуемый размер ОЗУ для ноды: ${min_ram_gb}GB - ${total_ram_gb}GB"
+        
+        while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
+            read -p "Введите размер оперативной памяти для ноды (в ГБ, например, 8): " RAM_INPUT
+            
+            # Проверка введенного значения
+            if [[ "$RAM_INPUT" =~ ^[0-9]+$ ]]; then
+                if [ "$RAM_INPUT" -ge "$min_ram_gb" ]; then
+                    if [ "$RAM_INPUT" -gt "$total_ram_gb" ]; then
+                        echo "Предупреждение: Указанный размер ОЗУ (${RAM_INPUT}GB) превышает доступный (${total_ram_gb}GB)."
+                        read -p "Продолжить с указанным значением? (y/n): " override_ram
+                        if [[ "$override_ram" =~ ^[Yy]$ ]]; then
+                            RAM="$RAM_INPUT"
+                            ram_validated=true
+                        fi
+                    else
+                        RAM="$RAM_INPUT"
+                        ram_validated=true
+                    fi
+                else
+                    echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
+                fi
             else
-                echo "Ошибка: Размер ОЗУ должен быть числом не менее 4 ГБ. Попробуйте снова."
+                echo "Ошибка: Размер ОЗУ должен быть числом."
+            fi
+            
+            ram_attempts=$((ram_attempts + 1))
+            
+            if [ "$ram_validated" = false ] && [ $ram_attempts -eq $max_ram_attempts ]; then
+                echo "Достигнуто максимальное количество попыток."
+                read -p "Использовать рекомендуемое значение (${min_ram_gb}GB)? (y/n): " use_default_ram
+                if [[ "$use_default_ram" =~ ^[Yy]$ ]]; then
+                    RAM="$min_ram_gb"
+                    ram_validated=true
+                else
+                    handle_error "Не удалось получить корректный размер ОЗУ" 25
+                fi
             fi
         done
         
+        # Получение информации о свободном месте на диске
+        local free_disk_kb=$(df -k . | tail -1 | awk '{print $4}')
+        local free_disk_mb=$((free_disk_kb / 1024))
+        local free_disk_gb=$((free_disk_mb / 1024))
+        
         # Запрос размера диска с проверкой
-        while true; do
-            read -p "Введите максимальный размер диска (в ГБ, например, 500): " DISK
-            if [[ "$DISK" =~ ^[0-9]+$ ]] && [ "$DISK" -ge 50 ]; then
-                break
+        local min_disk_gb=50
+        local disk_validated=false
+        local disk_attempts=0
+        local max_disk_attempts=3
+        
+        echo "Обнаружено свободное место на диске: ${free_disk_gb}GB"
+        echo "Рекомендуемый размер диска для ноды: ${min_disk_gb}GB - ${free_disk_gb}GB"
+        
+        while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
+            read -p "Введите максимальный размер диска для ноды (в ГБ, например, 500): " DISK_INPUT
+            
+            # Проверка введенного значения
+            if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
+                if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
+                    if [ "$DISK_INPUT" -gt "$free_disk_gb" ]; then
+                        echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
+                        read -p "Продолжить с указанным значением? (y/n): " override_disk
+                        if [[ "$override_disk" =~ ^[Yy]$ ]]; then
+                            DISK="$DISK_INPUT"
+                            disk_validated=true
+                        fi
+                    else
+                        DISK="$DISK_INPUT"
+                        disk_validated=true
+                    fi
+                else
+                    echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
+                fi
             else
-                echo "Ошибка: Размер диска должен быть числом не менее 50 ГБ. Попробуйте снова."
+                echo "Ошибка: Размер диска должен быть числом."
+            fi
+            
+            disk_attempts=$((disk_attempts + 1))
+            
+            if [ "$disk_validated" = false ] && [ $disk_attempts -eq $max_disk_attempts ]; then
+                echo "Достигнуто максимальное количество попыток."
+                read -p "Использовать рекомендуемое значение (${min_disk_gb}GB)? (y/n): " use_default_disk
+                if [[ "$use_default_disk" =~ ^[Yy]$ ]]; then
+                    DISK="$min_disk_gb"
+                    disk_validated=true
+                else
+                    handle_error "Не удалось получить корректный размер диска" 26
+                fi
             fi
         done
         
@@ -457,6 +591,9 @@ main() {
     # Запрос о просмотре логов
     read -p "Хотите просмотреть логи работающей ноды? (y/n): " show_logs
     if [[ "$show_logs" =~ ^[Yy]$ ]]; then
+        show_node_logs
+    else
+        log "Установка и настройка Pop успешно завершены" ]]; then
         show_node_logs
     else
         log "Установка и настройка Pop успешно завершены."
