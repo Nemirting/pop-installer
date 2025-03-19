@@ -340,50 +340,6 @@ validate_solana_key() {
     echo "$PUB_KEY"
 }
 
-# Функция проверки и преобразования размера ОЗУ
-validate_ram_size() {
-    local input_ram="$1"
-    local min_ram="$2"
-    
-    # Проверка, что введено число
-    if ! [[ "$input_ram" =~ ^[0-9]+$ ]]; then
-        echo "Ошибка: Размер ОЗУ должен быть числом."
-        return 1
-    fi
-    
-    # Проверка минимального размера
-    if [ "$input_ram" -lt "$min_ram" ]; then
-        echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram}GB."
-        return 1
-    fi
-    
-    # Возвращаем проверенное значение
-    echo "$input_ram"
-    return 0
-}
-
-# Функция проверки и преобразования размера диска
-validate_disk_size() {
-    local input_disk="$1"
-    local min_disk="$2"
-    
-    # Проверка, что введено число
-    if ! [[ "$input_disk" =~ ^[0-9]+$ ]]; then
-        echo "Ошибка: Размер диска должен быть числом."
-        return 1
-    fi
-    
-    # Проверка минимального размера
-    if [ "$input_disk" -lt "$min_disk" ]; then
-        echo "Ошибка: Размер диска должен быть не менее ${min_disk}GB."
-        return 1
-    fi
-    
-    # Возвращаем проверенное значение
-    echo "$input_disk"
-    return 0
-}
-
 # Основная часть скрипта
 main() {
     log "Начало установки Pop $POP_VERSION..."
@@ -582,9 +538,6 @@ main() {
         # Запуск ноды напрямую, если не выбран автозапуск
         log "Запуск ноды..."
         sudo ./pop --ram "$RAM" --max-disk "$DISK" --cache-dir download_cache --pubKey "$PUB_KEY" --enable-80-443 || handle_error "Не удалось запустить ноду" 19
-    fi
-    
-    # Проверка стату  --enable-80-443 || handle_error "Не удалось запустить ноду" 19
     fi
     
     # Проверка статуса ноды
