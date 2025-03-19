@@ -584,6 +584,9 @@ main() {
         sudo ./pop --ram "$RAM" --max-disk "$DISK" --cache-dir download_cache --pubKey "$PUB_KEY" --enable-80-443 || handle_error "Не удалось запустить ноду" 19
     fi
     
+    # Проверка стату  --enable-80-443 || handle_error "Не удалось запустить ноду" 19
+    fi
+    
     # Проверка статуса ноды
     sleep 5  # Даем ноде время на запуск
     check_node_status
@@ -591,9 +594,6 @@ main() {
     # Запрос о просмотре логов
     read -p "Хотите просмотреть логи работающей ноды? (y/n): " show_logs
     if [[ "$show_logs" =~ ^[Yy]$ ]]; then
-        show_node_logs
-    else
-        log "Установка и настройка Pop успешно завершены" ]]; then
         show_node_logs
     else
         log "Установка и настройка Pop успешно завершены."
