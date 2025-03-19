@@ -2,7 +2,7 @@
 
 # Улучшенный скрипт установки Pop с дополнительными функциями безопасности, надежности,
 # просмотром логов и автозапуском при перезагрузке
-# Исправлена ошибка с регистрацией ноды и правами доступа
+# Исправлена ошибка с регистрацией ноды, правами доступа и проверкой формата ключа
 
 # Переменные
 POP_VERSION="v0.2.8"
@@ -300,6 +300,40 @@ register_node() {
     log "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
 }
 
+# Функция проверки публичного ключа Solana
+validate_solana_key() {
+    local input_key="$1"
+    local max_attempts="$2"
+    local attempts=0
+    local PUB_KEY=""
+    
+    while [ -z "$PUB_KEY" ] && [ $attempts -lt $max_attempts ]; do
+        if [ $attempts -gt 0 ]; then
+            read -p "Введите ваш публичный ключ Solana: " input_key
+        fi
+        
+        # Более гибкая проверка формата ключа Solana
+        if [[ "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
+            PUB_KEY="$input_key"
+        else
+            attempts=$((attempts + 1))
+            remaining=$((max_attempts - attempts))
+            echo "Ошибка: Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
+            
+            if [ $attempts -eq $max_attempts ]; then
+                echo "Достигнуто максимальное количество попыток."
+                read -p "Хотите продолжить без проверки формата ключа? (y/n): " skip_validation
+                if [[ "$skip_validation" =~ ^[Yy]$ ]]; then
+                    PUB_KEY="$input_key"
+                    echo "Продолжение с введенным ключом без проверки формата."
+                fi
+            fi
+        fi
+    done
+    
+    echo "$PUB_KEY"
+}
+
 # Основная часть скрипта
 main() {
     log "Начало установки Pop $POP_VERSION..."
@@ -351,14 +385,13 @@ main() {
         log "Файл .env не найден. Необходимо ввести данные для конфигурации."
         
         # Запрос публичного ключа с проверкой формата
-        while true; do
-            read -p "Введите ваш публичный ключ Solana: " PUB_KEY
-            if [[ "$PUB_KEY" =~ ^[1-9A-HJ-NP-Za-km-z]{43,44}$ ]]; then
-                break
-            else
-                echo "Ошибка: Неверный формат публичного ключа Solana. Попробуйте снова."
-            fi
-        done
+        read -p "Введите ваш публичный ключ Solana: " input_key
+        PUB_KEY=$(validate_solana_key "$input_key" 3)
+        
+        # Если ключ не был получен, выходим с ошибкой
+        if [ -z "$PUB_KEY" ]; then
+            handle_error "Не удалось получить корректный публичный ключ Solana" 24
+        fi
         
         read -p "Введите вашу реферальную ссылку (если есть, иначе оставьте пустым): " REFERRAL
         
