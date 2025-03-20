@@ -585,55 +585,59 @@ main() {
         
         # Запрос размера ОЗУ с проверкой
         local min_ram_gb=4
-        local ram_validated=false
-        local ram_attempts=0
-        local max_ram_attempts=3
         
         echo "Обнаружено ОЗУ: ${total_ram_gb}GB"
         echo "Рекомендуемый размер ОЗУ для ноды: ${min_ram_gb}GB - ${total_ram_gb}GB"
         
-        while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
-            read -p "Введите размер оперативной памяти для ноды (в ГБ, например, 8): " RAM_INPUT
+        # Устанавливаем значение по умолчанию
+        RAM="$min_ram_gb"
+        echo "Установлено значение ОЗУ по умолчанию: ${RAM}GB"
+        
+        # Спрашиваем, хочет ли пользователь изменить значение
+        read -p "Хотите изменить размер ОЗУ? (y/n, по умолчанию - n): " change_ram
+        
+        if [[ "$change_ram" =~ ^[Yy]$ ]]; then
+            local ram_validated=false
+            local ram_attempts=0
+            local max_ram_attempts=3
             
-            # Удаляем все нецифровые символы для более надежной проверки
-            RAM_CLEAN=$(echo "$RAM_INPUT" | tr -cd '0-9')
-            
-            # Проверка введенного значения
-            if [ -n "$RAM_CLEAN" ] && [ "$RAM_CLEAN" = "$RAM_INPUT" ]; then
-                if [ "$RAM_CLEAN" -ge "$min_ram_gb" ]; then
-                    if [ "$RAM_CLEAN" -gt "$total_ram_gb" ]; then
-                        echo "Предупреждение: Указанный размер ОЗУ (${RAM_CLEAN}GB) превышает доступный (${total_ram_gb}GB)."
-                        read -p "Продолжить с указанным значением? (y/n): " override_ram
-                        if [[ "$override_ram" =~ ^[Yy]$ ]]; then
-                            RAM="$RAM_CLEAN"
+            while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
+                read -p "Введите размер оперативной памяти для ноды (в ГБ, целое число): " RAM_INPUT
+                
+                # Проверяем, что введено целое число
+                if [[ "$RAM_INPUT" =~ ^[0-9]+$ ]]; then
+                    if [ "$RAM_INPUT" -ge "$min_ram_gb" ]; then
+                        if [ "$RAM_INPUT" -gt "$total_ram_gb" ]; then
+                            echo "Предупреждение: Указанный размер ОЗУ (${RAM_INPUT}GB) превышает доступный (${total_ram_gb}GB)."
+                            read -p "Продолжить с указанным значением? (y/n): " override_ram
+                            if [[ "$override_ram" =~ ^[Yy]$ ]]; then
+                                RAM="$RAM_INPUT"
+                                ram_validated=true
+                                echo "Установлено значение ОЗУ: ${RAM}GB"
+                            fi
+                        else
+                            RAM="$RAM_INPUT"
                             ram_validated=true
+                            echo "Установлено значение ОЗУ: ${RAM}GB"
                         fi
                     else
-                        RAM="$RAM_CLEAN"
-                        ram_validated=true
+                        echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
                     fi
                 else
-                    echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
+                    echo "Ошибка: Введите целое число без дополнительных символов."
                 fi
-            else
-                echo "Ошибка: Размер ОЗУ должен быть целым числом без дополнительных символов."
-            fi
-            
-            ram_attempts=$((ram_attempts + 1))
-            
-            if [ "$ram_validated" = false ] && [ $ram_attempts -eq $max_ram_attempts ]; then
-                echo "Достигнуто максимальное количество попыток."
-                read -p "Использовать рекомендуемое значение (${min_ram_gb}GB)? (y/n): " use_default_ram
-                if [[ "$use_default_ram" =~ ^[Yy]$ ]]; then
+                
+                ram_attempts=$((ram_attempts + 1))
+                
+                if [ "$ram_validated" = false ] && [ $ram_attempts -eq $max_ram_attempts ]; then
+                    echo "Достигнуто максимальное количество попыток. Будет использовано значение по умолчанию: ${min_ram_gb}GB"
                     RAM="$min_ram_gb"
-                    ram_validated=true
-                else
-                    handle_error "Не удалось получить корректный размер ОЗУ" 25
+                    break
                 fi
-            fi
-        done
+            done
+        fi
         
-        # Получение информации о свободном месте на диске с использованием df -h
+        # Аналогично улучшим запрос размера диска
         local free_disk_gb=$(df -h . | tail -1 | awk '{print $4}' | sed 's/G//')
         
         # Проверка, содержит ли значение 'T' (терабайты)
@@ -645,53 +649,57 @@ main() {
         
         # Запрос размера диска с проверкой
         local min_disk_gb=50
-        local disk_validated=false
-        local disk_attempts=0
-        local max_disk_attempts=3
         
         echo "Обнаружено свободное место на диске: ${free_disk_gb}GB"
         echo "Рекомендуемый размер диска для ноды: ${min_disk_gb}GB - ${free_disk_gb}GB"
         
-        while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
-            read -p "Введите максимальный размер диска для ноды (в ГБ, например, 500): " DISK_INPUT
+        # Устанавливаем значение по умолчанию
+        DISK="$min_disk_gb"
+        echo "Установлено значение диска по умолчанию: ${DISK}GB"
+        
+        # Спрашиваем, хочет ли пользователь изменить значение
+        read -p "Хотите изменить размер диска? (y/n, по умолчанию - n): " change_disk
+        
+        if [[ "$change_disk" =~ ^[Yy]$ ]]; then
+            local disk_validated=false
+            local disk_attempts=0
+            local max_disk_attempts=3
             
-            # Удаляем все нецифровые символы для более надежной проверки
-            DISK_CLEAN=$(echo "$DISK_INPUT" | tr -cd '0-9')
-            
-            # Проверка введенного значения
-            if [ -n "$DISK_CLEAN" ] && [ "$DISK_CLEAN" = "$DISK_INPUT" ]; then
-                if [ "$DISK_CLEAN" -ge "$min_disk_gb" ]; then
-                    if (( $(echo "$DISK_CLEAN > $free_disk_gb" | bc -l) )); then
-                        echo "Предупреждение: Указанный размер диска (${DISK_CLEAN}GB) превышает доступный (${free_disk_gb}GB)."
-                        read -p "Продолжить с указанным значением? (y/n): " override_disk
-                        if [[ "$override_disk" =~ ^[Yy]$ ]]; then
-                            DISK="$DISK_CLEAN"
+            while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
+                read -p "Введите максимальный размер диска для ноды (в ГБ, целое число): " DISK_INPUT
+                
+                # Проверяем, что введено целое число
+                if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
+                    if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
+                        if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
+                            echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
+                            read -p "Продолжить с указанным значением? (y/n): " override_disk
+                            if [[ "$override_disk" =~ ^[Yy]$ ]]; then
+                                DISK="$DISK_INPUT"
+                                disk_validated=true
+                                echo "Установлено значение диска: ${DISK}GB"
+                            fi
+                        else
+                            DISK="$DISK_INPUT"
                             disk_validated=true
+                            echo "Установлено значение диска: ${DISK}GB"
                         fi
                     else
-                        DISK="$DISK_CLEAN"
-                        disk_validated=true
+                        echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
                     fi
                 else
-                    echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
+                    echo "Ошибка: Введите целое число без дополнительных символов."
                 fi
-            else
-                echo "Ошибка: Размер диска должен быть целым числом без дополнительных символов."
-            fi
-            
-            disk_attempts=$((disk_attempts + 1))
-            
-            if [ "$disk_validated" = false ] && [ $disk_attempts -eq $max_disk_attempts ]; then
-                echo "Достигнуто максимальное количество попыток."
-                read -p "Использовать рекомендуемое значение (${min_disk_gb}GB)? (y/n): " use_default_disk
-                if [[ "$use_default_disk" =~ ^[Yy]$ ]]; then
+                
+                disk_attempts=$((disk_attempts + 1))
+                
+                if [ "$disk_validated" = false ] && [ $disk_attempts -eq $max_disk_attempts ]; then
+                    echo "Достигнуто максимальное количество попыток. Будет использовано значение по умолчанию: ${min_disk_gb}GB"
                     DISK="$min_disk_gb"
-                    disk_validated=true
-                else
-                    handle_error "Не удалось получить корректный размер диска" 26
+                    break
                 fi
-            fi
-        done
+            done
+        fi
         
         # Сохранение данных в .env
         echo "PUB_KEY=$PUB_KEY" > .env
@@ -720,6 +728,7 @@ main() {
     
     # Запрос о создании systemd сервиса для автозапуска
     read -p "Настроить автозапуск ноды при перезагрузке сервера? (y/n): " setup_autostart
+    
     if [[ "$setup_autostart" =~ ^[Yy]$ ]]; then
         create_systemd_service
     else
