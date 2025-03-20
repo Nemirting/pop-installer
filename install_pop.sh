@@ -573,7 +573,7 @@ main() {
         PUB_KEY=$(validate_solana_key "$input_key" 3)
         
         # Если ключ не был получен, выходим с ошибкой
-        if [ -z "$PUB_KEY  3)
+        if [ -z "$PUB_KEY" ];  3)
         
         # Если ключ не был получен, выходим с ошибкой
         if [ -z "$PUB_KEY" ]; then
