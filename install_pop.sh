@@ -13,12 +13,35 @@ MIN_RAM_MB=4096  # Минимум 4 ГБ ОЗУ
 MIN_DISK_GB=50   # Минимум 50 ГБ диска
 CHECKSUM_URL="https://dl.pipecdn.app/${POP_VERSION}/pop.sha256"
 DEFAULT_REFERRAL="default"  # Замените на официальный реферальный код, если он известен
+EXCLUDE_CACHE=false  # По умолчанию включаем кэш в резервную копию
+REMOVE_ENV_FROM_GITIGNORE=false  # По умолчанию не удаляем .env из .gitignore
+SHOW_LOGS_ONLY=false  # По умолчанию не показываем только логи
 
-# Функция логирования
+# Обработка параметров командной строки
+for arg in "$@"; do
+    case $arg in
+        --logs)
+            SHOW_LOGS_ONLY=true
+            ;;
+        --no-cache)
+            EXCLUDE_CACHE=true
+            ;;
+        --remove-env)
+            REMOVE_ENV_FROM_GITIGNORE=true
+            ;;
+    esac
+done
+
+# Функция логирования с использованием logger
 log() {
     local current_time=$(date +"%Y-%m-%d %H:%M:%S")
     echo "$current_time: $1" >> "$LOG_FILE"
     echo "$current_time: $1"
+    
+    # Использование logger, если он доступен
+    if command -v logger &> /dev/null; then
+        logger -t pop_install "$1"
+    fi
 }
 
 # Функция обработки ошибок
@@ -30,13 +53,12 @@ handle_error() {
     exit "$error_code"
 }
 
-# Функция проверки системных требований
+# Функция проверки системных требований с использованием free и df -h
 check_system_requirements() {
     log "Проверка системных требований..."
     
-    # Проверка ОЗУ
-    local total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    local total_ram_mb=$((total_ram_kb / 1024))
+    # Проверка ОЗУ с использованием free
+    local total_ram_mb=$(free -m | awk 'NR==2{print $2}')
     local total_ram_gb=$((total_ram_mb / 1024))
     
     log "Обнаружено ОЗУ: ${total_ram_mb}MB (${total_ram_gb}GB)"
@@ -45,14 +67,19 @@ check_system_requirements() {
         handle_error "Недостаточно оперативной памяти. Требуется минимум ${MIN_RAM_MB}MB (4GB), доступно ${total_ram_mb}MB" 2
     fi
     
-    # Проверка свободного места на диске
-    local free_disk_kb=$(df -k . | tail -1 | awk '{print $4}')
-    local free_disk_mb=$((free_disk_kb / 1024))
-    local free_disk_gb=$((free_disk_mb / 1024))
+    # Проверка свободного места на диске с использованием df -h
+    local free_disk_gb=$(df -h . | tail -1 | awk '{print $4}' | sed 's/G//')
     
-    log "Обнаружено свободное место на диске: ${free_disk_mb}MB (${free_disk_gb}GB)"
+    # Проверка, содержит ли значение 'T' (терабайты)
+    if [[ "$free_disk_gb" == *T* ]]; then
+        # Конвертация из TB в GB
+        free_disk_gb=$(echo "$free_disk_gb" | sed 's/T//')
+        free_disk_gb=$(echo "$free_disk_gb * 1024" | bc)
+    fi
     
-    if [ "$free_disk_gb" -lt "$MIN_DISK_GB" ]; then
+    log "Обнаружено свободное место на диске: ${free_disk_gb}GB"
+    
+    if (( $(echo "$free_disk_gb < $MIN_DISK_GB" | bc -l) )); then
         handle_error "Недостаточно места на диске. Требуется минимум ${MIN_DISK_GB}GB, доступно ${free_disk_gb}GB" 3
     fi
     
@@ -74,8 +101,14 @@ backup_configuration() {
     # Создание резервной копии с временной меткой
     local backup_file="${BACKUP_DIR}/pop_config_$(date +%Y%m%d_%H%M%S).tar.gz"
     
-    # Архивирование всех важных файлов
-    tar -czf "$backup_file" .env pop_install.log download_cache 2>/dev/null || true
+    # Архивирование всех важных файлов с учетом параметра --no-cache
+    if [ "$EXCLUDE_CACHE" = false ]; then
+        log "Создание полной резервной копии (включая кэш)..."
+        tar -czf "$backup_file" .env pop_install.log download_cache 2>/dev/null || true
+    else
+        log "Создание резервной копии без кэша..."
+        tar -czf "$backup_file" .env pop_install.log 2>/dev/null || true
+    fi
     
     log "Резервная копия создана: $backup_file"
 }
@@ -105,7 +138,7 @@ verify_checksum() {
     log "Контрольная сумма проверена успешно"
 }
 
-# Функция проверки статуса ноды
+# Функция проверки статуса ноды с анализом логов
 check_node_status() {
     log "Проверка статуса ноды..."
     
@@ -118,6 +151,23 @@ check_node_status() {
         if [ -x "./pop" ]; then
             echo "Информация о ноде:"
             ./pop --status 2>/dev/null || echo "Команда статуса недоступна"
+        fi
+        
+        # Анализ логов на наличие ошибок
+        if systemctl list-unit-files | grep -q pop.service; then
+            # Если используется systemd, проверяем журнал
+            if sudo journalctl -u pop -n 100 | grep -i "error\|exception\|fail\|critical" > /dev/null; then
+                log "Предупреждение: В логах обнаружены ошибки."
+                echo "Предупреждение: В логах обнаружены ошибки. Проверьте логи с помощью команды:"
+                echo "sudo journalctl -u pop | grep -i 'error\\|exception\\|fail\\|critical'"
+            fi
+        elif [ -f "/var/log/pop.log" ]; then
+            # Если логи пишутся в файл
+            if grep -i "error\|exception\|fail\|critical" /var/log/pop.log > /dev/null; then
+                log "Предупреждение: В логах обнаружены ошибки."
+                echo "Предупреждение: В логах обнаружены ошибки. Проверьте логи с помощью команды:"
+                echo "grep -i 'error\\|exception\\|fail\\|critical' /var/log/pop.log"
+            fi
         fi
     else
         log "Предупреждение: Нода Pop не обнаружена в списке процессов"
@@ -134,6 +184,12 @@ auto_update() {
         log "Установка jq..."
         sudo apt-get update
         sudo apt-get install -y jq || handle_error "Не удалось установить jq" 7
+    fi
+    
+    # Проверка доступности GitHub API
+    if ! curl -s "https://api.github.com/repos/PipeNetwork/pop/releases/latest" > /dev/null; then
+        log "GitHub API недоступен. Продолжаем с текущей версией."
+        return
     fi
     
     # Получение последней версии
@@ -184,8 +240,11 @@ auto_update() {
         # Проверка контрольной суммы
         verify_checksum "pop" "$expected_checksum"
         
-        # Установка прав на выполнение
+        # Установка прав на выполнение с проверкой
         chmod +x pop || handle_error "Не удалось установить права на выполнение" 10
+        if [ ! -x "./pop" ]; then
+            handle_error "Не удалось установить права на выполнение" 10
+        fi
         
         # Обновление переменной версии
         POP_VERSION="$latest_version"
@@ -294,10 +353,15 @@ register_node() {
         fi
     fi
     
-    # Проверка прав на выполнение
+    # Проверка прав на выполнение с улучшенной проверкой
     if [ ! -x "./pop" ]; then
         log "Установка прав на выполнение для файла pop..."
         chmod +x pop || handle_error "Не удалось установить права на выполнение для файла pop" 23
+        
+        # Дополнительная проверка после chmod
+        if [ ! -x "./pop" ]; then
+            handle_error "Не удалось установить права на выполнение для файла pop" 23
+        fi
     fi
     
     # Выполняем регистрацию с реферальным кодом
@@ -306,7 +370,7 @@ register_node() {
     log "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
 }
 
-# Функция проверки публичного ключа Solana
+# Функция проверки публичного ключа Solana с исправленной логикой
 validate_solana_key() {
     local input_key="$1"
     local max_attempts="$2"
@@ -318,10 +382,24 @@ validate_solana_key() {
             read -p "Введите ваш публичный ключ Solana: " input_key
         fi
         
-        # Более гибкая проверка формата ключа Solana
-        if [[ "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
+        # Проверка с помощью solana-keygen, если он установлен
+        if command -v solana-keygen &> /dev/null; then
+            if solana-keygen verify "$input_key" &> /dev/null; then
+                PUB_KEY="$input_key"
+                log "Ключ проверен с помощью solana-keygen"
+            else
+                log "Ключ не прошел проверку solana-keygen"
+            fi
+        # Резервная проверка формата, если solana-keygen не установлен
+        elif [[ "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
             PUB_KEY="$input_key"
+            log "Ключ проверен по формату (solana-keygen не установлен)"
         else
+            log "Ключ не прошел проверку формата"
+        fi
+        
+        # Если ключ не прошел проверку
+        if [ -z "$PUB_KEY" ]; then
             attempts=$((attempts + 1))
             remaining=$((max_attempts - attempts))
             echo "Ошибка: Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
@@ -332,6 +410,7 @@ validate_solana_key() {
                 if [[ "$skip_validation" =~ ^[Yy]$ ]]; then
                     PUB_KEY="$input_key"
                     echo "Продолжение с введенным ключом без проверки формата."
+                    log "Пользователь решил продолжить с непроверенным ключом: $PUB_KEY"
                 fi
             fi
         fi
@@ -340,9 +419,33 @@ validate_solana_key() {
     echo "$PUB_KEY"
 }
 
+# Функция для удаления .env из .gitignore
+remove_env_from_gitignore() {
+    log "Удаление .env из .gitignore..."
+    
+    if [ -f ".gitignore" ]; then
+        sed -i '/\.env/d' .gitignore
+        log ".env удален из .gitignore"
+        echo ".env удален из .gitignore"
+    else
+        log ".gitignore не найден"
+        echo ".gitignore не найден"
+    fi
+}
+
 # Основная часть скрипта
 main() {
     log "Начало установки Pop $POP_VERSION..."
+    
+    # Обработка параметра --remove-env
+    if [ "$REMOVE_ENV_FROM_GITIGNORE" = true ]; then
+        remove_env_from_gitignore
+        # Если это единственная операция, выходим
+        if [ "$SHOW_LOGS_ONLY" = false ]; then
+            log "Операция удаления .env из .gitignore завершена"
+            exit 0
+        fi
+    fi
     
     # Проверка системных требований
     check_system_requirements
@@ -371,16 +474,91 @@ main() {
         verify_checksum "pop" "$expected_checksum"
     fi
     
-    # Установка прав на выполнение
+    # Установка прав на выполнение с улучшенной проверкой
     log "Установка прав на выполнение для файла pop..."
     chmod +x pop || handle_error "Не удалось установить права на выполнение" 14
+    if [ ! -x "./pop" ]; then
+        handle_error "Не удалось установить права на выполнение" 14
+    fi
     
     # Проверка зависимостей
     log "Проверка зависимостей..."
+
+    # Проверка libssl-dev
+    if ! dpkg -s libssl-dev &> /dev/null; then
+        log "Установка libssl-dev..."
+        sudo apt-get update
+        sudo apt-get install -y libssl-dev || handle_error "Не удалось установить libssl-dev" 18
+    fi
+
+    # Проверка build-essential
+    if ! dpkg -s build-essential &> /dev/null; then
+        log "Установка build-essential..."
+        sudo apt-get install -y build-essential || handle_error "Не удалось установить build-essential" 30
+    fi
+
+    # Проверка pkg-config
+    if ! command -v pkg-config &> /dev/null; then
+        log "Установка pkg-config..."
+        sudo apt-get install -y pkg-config || handle_error "Не удалось установить pkg-config" 31
+    fi
+
+    # Проверка jq
     if ! command -v jq &> /dev/null; then
         log "Установка jq..."
         sudo apt-get install -y jq || handle_error "Не удалось установить jq" 15
     fi
+
+    # Проверка git
+    if ! command -v git &> /dev/null; then
+        log "Установка git..."
+        sudo apt-get install -y git || handle_error "Не удалось установить git" 32
+    fi
+
+    # Проверка ca-certificates
+    if ! dpkg -s ca-certificates &> /dev/null; then
+        log "Установка ca-certificates..."
+        sudo apt-get install -y ca-certificates || handle_error "Не удалось установить ca-certificates" 33
+    fi
+
+    # Проверка net-tools
+    if ! dpkg -s net-tools &> /dev/null; then
+        log "Установка net-tools..."
+        sudo apt-get install -y net-tools || handle_error "Не удалось установить net-tools" 34
+    fi
+
+    # Проверка lsof
+    if ! command -v lsof &> /dev/null; then
+        log "Установка lsof..."
+        sudo apt-get install -y lsof || handle_error "Не удалось установить lsof" 35
+    fi
+
+    # Проверка libudev-dev (необходимо для работы с USB и аппаратными устройствами)
+    if ! dpkg -s libudev-dev &> /dev/null; then
+        log "Установка libudev-dev..."
+        sudo apt-get install -y libudev-dev || handle_error "Не удалось установить libudev-dev" 36
+    fi
+
+    # Проверка libclang-dev (может потребоваться для компиляции некоторых Rust-зависимостей)
+    if ! dpkg -s libclang-dev &> /dev/null; then
+        log "Установка libclang-dev..."
+        sudo apt-get install -y libclang-dev || handle_error "Не удалось установить libclang-dev" 37
+    fi
+
+    # Проверка openssl
+    if ! command -v openssl &> /dev/null; then
+        log "Установка openssl..."
+        sudo apt-get install -y openssl || handle_error "Не удалось установить openssl" 38
+    fi
+
+    # Проверка solana-keygen (опционально)
+    if ! command -v solana-keygen &> /dev/null; then
+        log "Предупреждение: solana-keygen не установлен. Будет использована базовая проверка формата ключа."
+        echo "Предупреждение: solana-keygen не установлен. Будет использована базовая проверка формата ключа."
+        echo "Для более надежной проверки ключей рекомендуется установить solana-cli."
+    fi
+
+    log "Все необходимые зависимости установлены"
     
     # Создание директории для кэша
     log "Создание директории для кэша..."
@@ -395,15 +573,17 @@ main() {
         PUB_KEY=$(validate_solana_key "$input_key" 3)
         
         # Если ключ не был получен, выходим с ошибкой
+        if [ -z "$PUB_KEY  3)
+        
+        # Если ключ не был получен, выходим с ошибкой
         if [ -z "$PUB_KEY" ]; then
             handle_error "Не удалось получить корректный публичный ключ Solana" 24
         fi
         
         read -p "Введите вашу реферальную ссылку (если есть, иначе оставьте пустым): " REFERRAL
         
-        # Получение информации о системной памяти
-        local total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-        local total_ram_mb=$((total_ram_kb / 1024))
+        # Получение информации о системной памяти с использованием free
+        local total_ram_mb=$(free -m | awk 'NR==2{print $2}')
         local total_ram_gb=$((total_ram_mb / 1024))
         
         # Запрос размера ОЗУ с проверкой
@@ -453,10 +633,15 @@ main() {
             fi
         done
         
-        # Получение информации о свободном месте на диске
-        local free_disk_kb=$(df -k . | tail -1 | awk '{print $4}')
-        local free_disk_mb=$((free_disk_kb / 1024))
-        local free_disk_gb=$((free_disk_mb / 1024))
+        # Получение информации о свободном месте на диске с использованием df -h
+        local free_disk_gb=$(df -h . | tail -1 | awk '{print $4}' | sed 's/G//')
+        
+        # Проверка, содержит ли значение 'T' (терабайты)
+        if [[ "$free_disk_gb" == *T* ]]; then
+            # Конвертация из TB в GB
+            free_disk_gb=$(echo "$free_disk_gb" | sed 's/T//')
+            free_disk_gb=$(echo "$free_disk_gb * 1024" | bc)
+        fi
         
         # Запрос размера диска с проверкой
         local min_disk_gb=50
@@ -473,7 +658,7 @@ main() {
             # Проверка введенного значения
             if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
                 if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
-                    if [ "$DISK_INPUT" -gt "$free_disk_gb" ]; then
+                    if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
                         echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
                         read -p "Продолжить с указанным значением? (y/n): " override_disk
                         if [[ "$override_disk" =~ ^[Yy]$ ]]; then
@@ -564,7 +749,7 @@ main() {
 }
 
 # Обработка параметров командной строки
-if [ "$1" = "--logs" ]; then
+if [ "$SHOW_LOGS_ONLY" = true ]; then
     # Если скрипт запущен с параметром --logs, показываем только логи
     if [ -f ".env" ]; then
         source .env
