@@ -595,25 +595,28 @@ main() {
         while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
             read -p "Введите размер оперативной памяти для ноды (в ГБ, например, 8): " RAM_INPUT
             
+            # Удаляем все нецифровые символы для более надежной проверки
+            RAM_CLEAN=$(echo "$RAM_INPUT" | tr -cd '0-9')
+            
             # Проверка введенного значения
-            if [[ "$RAM_INPUT" =~ ^[0-9]+$ ]]; then
-                if [ "$RAM_INPUT" -ge "$min_ram_gb" ]; then
-                    if [ "$RAM_INPUT" -gt "$total_ram_gb" ]; then
-                        echo "Предупреждение: Указанный размер ОЗУ (${RAM_INPUT}GB) превышает доступный (${total_ram_gb}GB)."
+            if [ -n "$RAM_CLEAN" ] && [ "$RAM_CLEAN" = "$RAM_INPUT" ]; then
+                if [ "$RAM_CLEAN" -ge "$min_ram_gb" ]; then
+                    if [ "$RAM_CLEAN" -gt "$total_ram_gb" ]; then
+                        echo "Предупреждение: Указанный размер ОЗУ (${RAM_CLEAN}GB) превышает доступный (${total_ram_gb}GB)."
                         read -p "Продолжить с указанным значением? (y/n): " override_ram
                         if [[ "$override_ram" =~ ^[Yy]$ ]]; then
-                            RAM="$RAM_INPUT"
+                            RAM="$RAM_CLEAN"
                             ram_validated=true
                         fi
                     else
-                        RAM="$RAM_INPUT"
+                        RAM="$RAM_CLEAN"
                         ram_validated=true
                     fi
                 else
                     echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
                 fi
             else
-                echo "Ошибка: Размер ОЗУ должен быть числом."
+                echo "Ошибка: Размер ОЗУ должен быть целым числом без дополнительных символов."
             fi
             
             ram_attempts=$((ram_attempts + 1))
@@ -652,25 +655,28 @@ main() {
         while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
             read -p "Введите максимальный размер диска для ноды (в ГБ, например, 500): " DISK_INPUT
             
+            # Удаляем все нецифровые символы для более надежной проверки
+            DISK_CLEAN=$(echo "$DISK_INPUT" | tr -cd '0-9')
+            
             # Проверка введенного значения
-            if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
-                if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
-                    if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
-                        echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
+            if [ -n "$DISK_CLEAN" ] && [ "$DISK_CLEAN" = "$DISK_INPUT" ]; then
+                if [ "$DISK_CLEAN" -ge "$min_disk_gb" ]; then
+                    if (( $(echo "$DISK_CLEAN > $free_disk_gb" | bc -l) )); then
+                        echo "Предупреждение: Указанный размер диска (${DISK_CLEAN}GB) превышает доступный (${free_disk_gb}GB)."
                         read -p "Продолжить с указанным значением? (y/n): " override_disk
                         if [[ "$override_disk" =~ ^[Yy]$ ]]; then
-                            DISK="$DISK_INPUT"
+                            DISK="$DISK_CLEAN"
                             disk_validated=true
                         fi
                     else
-                        DISK="$DISK_INPUT"
+                        DISK="$DISK_CLEAN"
                         disk_validated=true
                     fi
                 else
                     echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
                 fi
             else
-                echo "Ошибка: Размер диска должен быть числом."
+                echo "Ошибка: Размер диска должен быть целым числом без дополнительных символов."
             fi
             
             disk_attempts=$((disk_attempts + 1))
