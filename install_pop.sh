@@ -106,7 +106,7 @@ backup_configuration() {
         log "Создание полной резервной копии (включая кэш)..."
         tar -czf "$backup_file" .env pop_install.log download_cache node_info.json 2>/dev/null || true
     else
-        log "Создание резервной копии без кэша..."
+        log "Создани�� резервной копии без кэша..."
         tar -czf "$backup_file" .env pop_install.log node_info.json 2>/dev/null || true
     fi
     
@@ -556,6 +556,71 @@ remove_env_from_gitignore() {
     fi
 }
 
+# Функция проверки и исправления файла .env
+validate_env_file() {
+    log "Проверка файла .env..."
+    
+    local env_valid=true
+    local pub_key_found=false
+    local referral_found=false
+    local ram_found=false
+    local disk_found=false
+    
+    # Проверка существования файла
+    if [ ! -f ".env" ]; then
+        log "Файл .env не найден."
+        return 1
+    fi
+    
+    # Проверка содержимого файла
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Пропускаем пустые строки и комментарии
+        if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then
+            continue
+        fi
+        
+        # Проверка формата KEY=VALUE
+        if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            log "Некорректная строка в .env: $line"
+            env_valid=false
+            break
+        fi
+        
+        # Проверка наличия необходимых переменных
+        if [[ "$line" =~ ^PUB_KEY= ]]; then
+            pub_key_found=true
+            # Проверка, что значение не пустое
+            if [[ "$line" == "PUB_KEY=" ]]; then
+                log "Пустое значение PUB_KEY в .env"
+                env_valid=false
+                break
+            fi
+        elif [[ "$line" =~ ^REFERRAL= ]]; then
+            referral_found=true
+        elif [[ "$line" =~ ^RAM= ]]; then
+            ram_found=true
+        elif [[ "$line" =~ ^DISK= ]]; then
+            disk_found=true
+        fi
+    done < ".env"
+    
+    # Проверка наличия всех необходимых переменных
+    if [ "$pub_key_found" = false ] || [ "$ram_found" = false ] || [ "$disk_found" = false ]; then
+        log "В файле .env отсутствуют необходимые переменные"
+        env_valid=false
+    fi
+    
+    # Если файл некорректен, создаем резервную копию и возвращаем ошибку
+    if [ "$env_valid" = false ]; then
+        log "Файл .env некорректен. Создание резервной копии..."
+        mv .env .env.backup.$(date +%Y%m%d_%H%M%S) || true
+        return 1
+    fi
+    
+    log "Файл .env проверен и корректен"
+    return 0
+}
+
 # Основная часть скрипта
 main() {
     log "Начало установки Pop $POP_VERSION..."
@@ -688,8 +753,194 @@ main() {
     mkdir -p download_cache || handle_error "Не удалось создать директорию для кэша" 16
     
     # Проверка наличия файла конфигурации .env
-    if [ ! -f ".env" ]; then
+    # if [ ! -f ".env" ]; then
+    #     log "Файл .env не найден. Необходимо ввести данные для конфигурации."
+        
+    #     # Запрос публичного ключа с проверкой формата
+    #     echo "Введите ваш публичный ключ Solana (32-44 символа, буквы и цифры)."
+    #     echo "Пример: 7UX2i7SucgLMQcfZ75s3VXmZZY4YRUyJN9X1RgfMoDUi"
+    #     read -p "Публичный ключ Solana: " input_key
+    #     PUB_KEY=$(validate_solana_key "$input_key" 3)
+        
+    #     # Если ключ не был получен, выходим с ошибкой
+    #     if [ -z "$PUB_KEY" ]; then
+    #         handle_error "Не удалось получить корректный публичный ключ Solana" 24
+    #     fi
+        
+    #     # Запрос реферального кода с проверкой
+    #     echo "Введите реферальный код (минимум 3 символа, буквы, цифры, дефисы или подчеркивания)."
+    #     read -p "Реферальный код (или нажмите Enter для использования кода по умолчанию): " input_referral
+        
+    #     if [ -n "$input_referral" ]; then
+    #         if validate_referral_code "$input_referral"; then
+    #             REFERRAL="$input_referral"
+    #         else
+    #             echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
+    #             REFERRAL="$DEFAULT_REFERRAL"
+    #         fi
+    #     else
+    #         REFERRAL="$DEFAULT_REFERRAL"
+    #     fi
+        
+    #     # Получение информации о системной памяти с использованием free
+    #     local total_ram_mb=$(free -m | awk 'NR==2{print $2}')
+    #     local total_ram_gb=$((total_ram_mb / 1024))
+        
+    #     # Запрос размера ОЗУ с проверкой
+    #     local min_ram_gb=4
+        
+    #     echo "Обнаружено ОЗУ: ${total_ram_gb}GB"
+    #     echo "Рекомендуемый размер ОЗУ для ноды: ${min_ram_gb}GB - ${total_ram_gb}GB"
+        
+    #     # Устанавливаем значение по умолчанию
+    #     RAM="$min_ram_gb"
+    #     echo "Установлено значение ОЗУ по умолчанию: ${RAM}GB"
+        
+    #     # Спрашиваем, хочет ли пользователь изменить значение
+    #     read -p "Хотите изменить размер ОЗУ? (y/n, по умолчанию - n): " change_ram
+        
+    #     if [[ "$change_ram" =~ ^[Yy]$ ]]; then
+    #         local ram_validated=false
+    #         local ram_attempts=0
+    #         local max_ram_attempts=3
+            
+    #         while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
+    #             read -p "Введите размер оперативной памяти для ноды (в ГБ, целое число): " RAM_INPUT
+                
+    #             # Проверяем, что введено целое число
+    #             if [[ "$RAM_INPUT" =~ ^[0-9]+$ ]]; then
+    #                 if [ "$RAM_INPUT" -ge "$min_ram_gb" ]; then
+    #                     if [ "$RAM_INPUT" -gt "$total_ram_gb" ]; then
+    #                         echo "Предупреждение: Указанный размер ОЗУ (${RAM_INPUT}GB) превышает доступный (${total_ram_gb}GB)."
+    #                         read -p "Продолжить с указанным значением? (y/n): " override_ram
+    #                         if [[ "$override_ram" =~ ^[Yy]$ ]]; then
+    #                             RAM="$RAM_INPUT"
+    #                             ram_validated=true
+    #                             echo "Установлено значение ОЗУ: ${RAM}GB"
+    #                         fi
+    #                     else
+    #                         RAM="$RAM_INPUT"
+    #                         ram_validated=true
+    #                         echo "Установлено значение ОЗУ: ${RAM}GB"
+    #                     fi
+    #                 else
+    #                     echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
+    #                 fi
+    #             else
+    #                 echo "Ошибка: Введите целое число без дополнительных символов."
+    #             fi
+                
+    #             ram_attempts=$((ram_attempts + 1))
+                
+    #             if [ "$ram_validated" = false ] && [ $ram_attempts -eq $max_ram_attempts ]; then
+    #                 echo "Достигнуто максимальное количество попыток. Будет использовано значение по умолчанию: ${min_ram_gb}GB"
+    #                 RAM="$min_ram_gb"
+    #                 break
+    #             fi
+    #         done
+    #     fi
+        
+    #     # Аналогично улучшим запрос размера диска
+    #     local free_disk_gb=$(df -h . | tail -1 | awk '{print $4}' | sed 's/G//')
+        
+    #     # Проверка, содержит ли значение 'T' (терабайты)
+    #     if [[ "$free_disk_gb" == *T* ]]; then
+    #         # Конвертация из TB в GB
+    #         free_disk_gb=$(echo "$free_disk_gb" | sed 's/T//')
+    #         free_disk_gb=$(echo "$free_disk_gb * 1024" | bc)
+    #     fi
+        
+    #     # Запрос размера диска с проверкой
+    #     local min_disk_gb=50
+        
+    #     echo "Обнаружено свободное место на диске: ${free_disk_gb}GB"
+    #     echo "Рекомендуемый размер диска для ноды: ${min_disk_gb}GB - ${free_disk_gb}GB"
+        
+    #     # Устанавливаем значение по умолчанию
+    #     DISK="$min_disk_gb"
+    #     echo "Установлено значение диска по умолчанию: ${DISK}GB"
+        
+    #     # Спрашиваем, хочет ли пользователь изменить значение
+    #     read -p "Хотите изменить размер диска? (y/n, по умолчанию - n): " change_disk
+        
+    #     if [[ "$change_disk" =~ ^[Yy]$ ]]; then
+    #         local disk_validated=false
+    #         local disk_attempts=0
+    #         local max_disk_attempts=3
+            
+    #         while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
+    #             read -p "Введите максимальный размер диска для ноды (в ГБ, целое число): " DISK_INPUT
+                
+    #             # Проверяем, что введено целое число
+    #             if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
+    #                 if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
+    #                     if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
+    #                         echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
+    #                         read -p "Продолжить с указанным значением? (y/n): " override_disk
+    #                         if [[ "$override_disk" =~ ^[Yy]$ ]]; then
+    #                             DISK="$DISK_INPUT"
+    #                             disk_validated=true
+    #                             echo "Установлено значение диска: ${DISK}GB"
+    #                         fi
+    #                     else
+    #                         DISK="$DISK_INPUT"
+    #                         disk_validated=true
+    #                         echo "Установлено значение диска: ${DISK}GB"
+    #                     fi
+    #                 else
+    #                     echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
+    #                 fi
+    #             else
+    #                 echo "Ошибка: Введите целое число без дополнительных символов."
+    #             fi
+                
+    #             disk_attempts=$((disk_attempts + 1))
+                
+    #             if [ "$disk_validated" = false ] && [ $disk_attempts -eq $max_disk_attempts ]; then
+    #                 echo "Достигнуто максимальное количество попыток. Будет использовано значение по умолчанию: ${min_disk_gb}GB"
+    #                 DISK="$min_disk_gb"
+    #                 break
+    #             fi
+    #         done
+    #     fi
+        
+    #     # Сохранение данных в .env
+    #     echo "PUB_KEY=$PUB_KEY" > .env
+    #     echo "REFERRAL=$REFERRAL" >> .env
+    #     echo "RAM=$RAM" >> .env
+    #     echo "DISK=$DISK" >> .env
+        
+    #     # Добавление .env в .gitignore (если необходимо)
+    #     if [ -f ".gitignore" ]; then
+    #         grep -q "^.env$" .gitignore || echo ".env" >> .gitignore
+    #     else
+    #         echo ".env" > .gitignore
+    #     fi
+        
+    #     log "Файл конфигурации .env создан"
+    # else
+    #     log "Файл .env найден. Используем существующие данные."
+    #     source .env
+    # fi
+
+    # Проверка наличия и корректности файла конфигурации .env
+    if [ -f ".env" ]; then
+        log "Файл .env найден. Проверка корректности..."
+        if validate_env_file; then
+            log "Файл .env корректен. Используем существующие данные."
+            source .env
+        else
+            log "Файл .env некорректен. Необходимо ввести данные заново."
+            create_new_env_file=true
+        fi
+    else
         log "Файл .env не найден. Необходимо ввести данные для конфигурации."
+        create_new_env_file=true
+    fi
+    
+    # Создание нового файла .env при необходимости
+    if [ "${create_new_env_file:-false}" = true ]; then
+        log "Создание нового файла .env..."
         
         # Запрос публичного ключа с проверкой формата
         echo "Введите ваш публичный ключ Solana (32-44 символа, буквы и цифры)."
@@ -742,8 +993,11 @@ main() {
             while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
                 read -p "Введите размер оперативной памяти для ноды (в ГБ, целое число): " RAM_INPUT
                 
+                # Очистка ввода от нечисловых символов
+                RAM_INPUT=$(echo "$RAM_INPUT" | tr -cd '0-9')
+                
                 # Проверяем, что введено целое число
-                if [[ "$RAM_INPUT" =~ ^[0-9]+$ ]]; then
+                if [ -n "$RAM_INPUT" ]; then
                     if [ "$RAM_INPUT" -ge "$min_ram_gb" ]; then
                         if [ "$RAM_INPUT" -gt "$total_ram_gb" ]; then
                             echo "Предупреждение: Указанный размер ОЗУ (${RAM_INPUT}GB) превышает доступный (${total_ram_gb}GB)."
@@ -762,7 +1016,7 @@ main() {
                         echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
                     fi
                 else
-                    echo "Ошибка: Введите целое число без дополнительных символов."
+                    echo "Ошибка: Размер ОЗУ должен быть числом."
                 fi
                 
                 ram_attempts=$((ram_attempts + 1))
@@ -806,8 +1060,11 @@ main() {
             while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
                 read -p "Введите максимальный размер диска для ноды (в ГБ, целое число): " DISK_INPUT
                 
+                # Очистка ввода от нечисловых символов
+                DISK_INPUT=$(echo "$DISK_INPUT" | tr -cd '0-9')
+                
                 # Проверяем, что введено целое число
-                if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
+                if [ -n "$DISK_INPUT" ]; then
                     if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
                         if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
                             echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
@@ -826,7 +1083,7 @@ main() {
                         echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
                     fi
                 else
-                    echo "Ошибка: Введите целое число без дополнительных символов."
+                    echo "Ошибка: Размер диска должен быть числом."
                 fi
                 
                 disk_attempts=$((disk_attempts + 1))
@@ -853,9 +1110,6 @@ main() {
         fi
         
         log "Файл конфигурации .env создан"
-    else
-        log "Файл .env найден. Используем существующие данные."
-        source .env
     fi
     
     # Создание резервной копии конфигурации
