@@ -533,9 +533,12 @@ validate_solana_key() {
     # Если установлен флаг пропуска проверки публичного ключа, возвращаем пустую строку
     if [ "$FORCE_SKIP_PUBKEY" = true ]; then
         log "Проверка публичного ключа Solana пропущена."
-        echo ""
         return 0
     fi
+    
+    # Перенаправляем вывод ошибок в лог-файл, чтобы они не попадали в stdout
+    exec 3>&2 # Сохраняем stderr
+    exec 2>>"$LOG_FILE" # Перенаправляем stderr в лог-файл
     
     while [ -z "$valid_key" ] && [ $attempts -lt $max_attempts ]; do
         if [ $attempts -gt 0 ]; then
@@ -586,8 +589,8 @@ validate_solana_key() {
                         FORCE_SKIP_PUBKEY=true
                         log "Пользователь решил продолжить без публичного ключа."
                         echo "Продолжение без публичного ключа."
-                        echo ""
-                        return 0
+                        valid_key=""
+                        break
                     fi
                 else
                     read -p "Хотите продолжить без проверки формата ключа? (y/n): " skip_validation
@@ -600,6 +603,10 @@ validate_solana_key() {
             fi
         fi
     done
+    
+    # Восстанавливаем stderr
+    exec 2>&3
+    exec 3>&-
     
     echo "$valid_key"
 }
@@ -692,7 +699,10 @@ start_node() {
     
     # Добавляем публичный ключ только если он задан и не пропущен
     if [ -n "${PUB_KEY}" ] && [ "$FORCE_SKIP_PUBKEY" = false ]; then
+        log "Добавление публичного ключа в команду запуска: ${PUB_KEY}"
         start_command="${start_command} --pubKey ${PUB_KEY}"
+    else
+        log "Запуск без публичного ключа (ключ пропущен или не задан)"
     fi
     
     # Добавляем флаг для портов 80 и 443
@@ -700,7 +710,7 @@ start_node() {
     
     # Запуск ноды
     log "Выполнение команды: $start_command"
-    eval sudo $start_command || handle_error "Не удалось запустить ноду" 19
+    sudo bash -c "$start_command" || handle_error "Не удалось запустить ноду" 19
 }
 
 # Основная часть скрипта
@@ -996,7 +1006,7 @@ main() {
                 # Очистка ввода от нечисловых символов
                 DISK_INPUT=$(echo "$DISK_INPUT" | tr -cd '0-9')
                 
-                # Проверяем, что введено целое число
+                # П��оверяем, что введено целое число
                 if [ -n "$DISK_INPUT" ]; then
                     if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
                         if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
