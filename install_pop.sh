@@ -104,10 +104,10 @@ backup_configuration() {
     # Архивирование всех важных файлов с учетом параметра --no-cache
     if [ "$EXCLUDE_CACHE" = false ]; then
         log "Создание полной резервной копии (включая кэш)..."
-        tar -czf "$backup_file" .env pop_install.log download_cache 2>/dev/null || true
+        tar -czf "$backup_file" .env pop_install.log download_cache node_info.json 2>/dev/null || true
     else
         log "Создание резервной копии без кэша..."
-        tar -czf "$backup_file" .env pop_install.log 2>/dev/null || true
+        tar -czf "$backup_file" .env pop_install.log node_info.json 2>/dev/null || true
     fi
     
     log "Резервная копия создана: $backup_file"
@@ -329,6 +329,30 @@ show_node_logs() {
     fi
 }
 
+# Функция проверки реферального кода
+validate_referral_code() {
+    local referral_code="$1"
+    
+    # Проверка, что реферальный код не пустой и имеет правильный формат
+    if [ -z "$referral_code" ]; then
+        return 1
+    fi
+    
+    # Проверка минимальной длины (обычно реферальные коды имеют минимальную длину)
+    if [ ${#referral_code} -lt 3 ]; then
+        echo "Реферальный код слишком короткий. Минимальная длина - 3 символа."
+        return 1
+    fi
+    
+    # Проверка на допустимые символы (буквы, цифры, дефисы, подчеркивания)
+    if ! [[ "$referral_code" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "Реферальный код содержит недопустимые символы. Разрешены только буквы, цифры, дефисы и подчеркивания."
+        return 1
+    fi
+    
+    return 0
+}
+
 # Функция регистрации ноды (исправленная)
 register_node() {
     log "Регистрация ноды..."
@@ -340,7 +364,13 @@ register_node() {
         read -p "Введите реферальный код (или нажмите Enter для использования кода по умолчанию): " user_referral
         
         if [ -n "$user_referral" ]; then
-            REFERRAL="$user_referral"
+            # Проверка введенного реферального кода
+            if validate_referral_code "$user_referral"; then
+                REFERRAL="$user_referral"
+            else
+                echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
+                REFERRAL="$DEFAULT_REFERRAL"
+            fi
         else
             # Используем код по умолчанию
             REFERRAL="$DEFAULT_REFERRAL"
@@ -350,6 +380,16 @@ register_node() {
         # Обновляем .env файл
         if [ -f ".env" ]; then
             sed -i "s/^REFERRAL=.*/REFERRAL=$REFERRAL/" .env || true
+        fi
+    else
+        # Проверка существующего реферального кода
+        if ! validate_referral_code "$REFERRAL"; then
+            echo "Существующий реферальный код некорректен. Будет использован код по умолчанию."
+            REFERRAL="$DEFAULT_REFERRAL"
+            # Обновляем .env файл
+            if [ -f ".env" ]; then
+                sed -i "s/^REFERRAL=.*/REFERRAL=$REFERRAL/" .env || true
+            fi
         fi
     fi
     
@@ -364,10 +404,91 @@ register_node() {
         fi
     fi
     
+    # Проверка наличия файла node_info.json
+    if [ -f "node_info.json" ]; then
+        log "Обнаружен существующий файл node_info.json. Нода уже может быть зарегистрирована."
+        echo "Обнаружен существующий файл node_info.json. Нода уже может быть зарегистрирована."
+        return 0
+    fi
+    
     # Выполняем регистрацию с реферальным кодом
-    ./pop --signup-by-referral-route "$REFERRAL" || handle_error "Не удалось зарегистрировать ноду с реферальным кодом: $REFERRAL" 17
+    local registration_output
+    registration_output=$(./pop --signup-by-referral-route "$REFERRAL" 2>&1)
+    local registration_status=$?
+    
+    # Проверка результата регистрации
+    if [ $registration_status -ne 0 ] || echo "$registration_output" | grep -q "Invalid referral code\|Rate limit\|error\|Error\|failed"; then
+        log "Ошибка при регистрации ноды: $registration_output"
+        echo "Ошибка при регистрации ноды: $registration_output"
+        
+        # Проверка на ограничение по частоте запросов
+        if echo "$registration_output" | grep -q "Rate limit"; then
+            log "Обнаружено ограничение по частоте запросов. Попробуйте повторить через час или с другого IP-адреса."
+            echo "Обнаружено ограничение по частоте запросов. Попробуйте повторить через час или с другого IP-адреса."
+            echo "Вы можете продолжить установку, но нода не будет зарегистрирована."
+            read -p "Продолжить установку без регистрации? (y/n): " continue_without_registration
+            if [[ "$continue_without_registration" =~ ^[Yy]$ ]]; then
+                log "Продолжение установки без регистрации."
+                return 0
+            else
+                handle_error "Регистрация ноды не удалась из-за ограничения по частоте запросов" 17
+            fi
+        fi
+        
+        # Проверка на неверный реферальный код
+        if echo "$registration_output" | grep -q "Invalid referral code"; then
+            log "Неверный реферальный код. Попробуйте использовать другой код."
+            echo "Неверный реферальный код. Попробуйте использовать другой код."
+            read -p "Введите другой реферальный код (или нажмите Enter для использования кода по умолчанию): " new_referral
+            
+            if [ -n "$new_referral" ]; then
+                if validate_referral_code "$new_referral"; then
+                    REFERRAL="$new_referral"
+                else
+                    echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
+                    REFERRAL="$DEFAULT_REFERRAL"
+                fi
+            else
+                REFERRAL="$DEFAULT_REFERRAL"
+            fi
+            
+            # Обновляем .env файл
+            if [ -f ".env" ]; then
+                sed -i "s/^REFERRAL=.*/REFERRAL=$REFERRAL/" .env || true
+            fi
+            
+            # Повторная попытка регистрации
+            log "Повторная попытка регистрации с кодом: $REFERRAL"
+            registration_output=$(./pop --signup-by-referral-route "$REFERRAL" 2>&1)
+            registration_status=$?
+            
+            if [ $registration_status -ne 0 ] || echo "$registration_output" | grep -q "Invalid referral code\|Rate limit\|error\|Error\|failed"; then
+                log "Повторная попытка регистрации не удалась: $registration_output"
+                echo "Повторная попытка регистрации не удалась: $registration_output"
+                echo "Вы можете продолжить установку, но нода не будет зарегистрирована."
+                read -p "Продолжить установку без регистрации? (y/n): " continue_without_registration
+                if [[ "$continue_without_registration" =~ ^[Yy]$ ]]; then
+                    log "Продолжение установки без регистрации."
+                    return 0
+                else
+                    handle_error "Регистрация ноды не удалась" 17
+                fi
+            fi
+        else
+            # Другие ошибки
+            echo "Вы можете продолжить установку, но нода не будет зарегистрирована."
+            read -p "Продолжить установку без регистрации? (y/n): " continue_without_registration
+            if [[ "$continue_without_registration" =~ ^[Yy]$ ]]; then
+                log "Продолжение установки без регистрации."
+                return 0
+            else
+                handle_error "Регистрация ноды не удалась" 17
+            fi
+        fi
+    fi
     
     log "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
+    echo "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
 }
 
 # Функция проверки публичного ключа Solana с исправленной логикой
@@ -403,6 +524,8 @@ validate_solana_key() {
             attempts=$((attempts + 1))
             remaining=$((max_attempts - attempts))
             echo "Ошибка: Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
+            echo "Публичный ключ Solana должен содержать от 32 до 44 символов и состоять из букв и цифр."
+            echo "Пример правильного ключа: 7UX2i7SucgLMQcfZ75s3VXmZZY4YRUyJN9X1RgfMoDUi"
             
             if [ $attempts -eq $max_attempts ]; then
                 echo "Достигнуто максимальное количество попыток."
@@ -569,7 +692,9 @@ main() {
         log "Файл .env не найден. Необходимо ввести данные для конфигурации."
         
         # Запрос публичного ключа с проверкой формата
-        read -p "Введите ваш публичный ключ Solana: " input_key
+        echo "Введите ваш публичный ключ Solana (32-44 символа, буквы и цифры)."
+        echo "Пример: 7UX2i7SucgLMQcfZ75s3VXmZZY4YRUyJN9X1RgfMoDUi"
+        read -p "Публичный ключ Solana: " input_key
         PUB_KEY=$(validate_solana_key "$input_key" 3)
         
         # Если ключ не был получен, выходим с ошибкой
@@ -577,7 +702,20 @@ main() {
             handle_error "Не удалось получить корректный публичный ключ Solana" 24
         fi
         
-        read -p "Введите вашу реферальную ссылку (если есть, иначе оставьте пустым): " REFERRAL
+        # Запрос реферального кода с проверкой
+        echo "Введите реферальный код (минимум 3 символа, буквы, цифры, дефисы или подчеркивания)."
+        read -p "Реферальный код (или нажмите Enter для использования кода по умолчанию): " input_referral
+        
+        if [ -n "$input_referral" ]; then
+            if validate_referral_code "$input_referral"; then
+                REFERRAL="$input_referral"
+            else
+                echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
+                REFERRAL="$DEFAULT_REFERRAL"
+            fi
+        else
+            REFERRAL="$DEFAULT_REFERRAL"
+        fi
         
         # Получение информации о системной памяти с использованием free
         local total_ram_mb=$(free -m | awk 'NR==2{print $2}')
