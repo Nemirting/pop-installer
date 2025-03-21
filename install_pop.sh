@@ -528,21 +528,23 @@ validate_solana_key() {
     local input_key="$1"
     local max_attempts="$2"
     local attempts=0
-    local PUB_KEY=""
+    local valid_key=""
     
     # Если установлен флаг пропуска проверки публичного ключа, возвращаем пустую строку
     if [ "$FORCE_SKIP_PUBKEY" = true ]; then
         log "Проверка публичного ключа Solana пропущена."
+        echo ""
         return 0
     fi
     
-    while [ -z "$PUB_KEY" ] && [ $attempts -lt $max_attempts ]; do
+    while [ -z "$valid_key" ] && [ $attempts -lt $max_attempts ]; do
         if [ $attempts -gt 0 ]; then
             read -p "Введите ваш публичный ключ Solana: " input_key
         fi
         
         # Проверка на пустой ввод
         if [ -z "$input_key" ]; then
+            log "Публичный ключ не может быть пустым."
             echo "Публичный ключ не может быть пустым."
             attempts=$((attempts + 1))
             continue
@@ -551,23 +553,24 @@ validate_solana_key() {
         # Проверка с помощью solana-keygen, если он установлен
         if command -v solana-keygen &> /dev/null; then
             if solana-keygen verify "$input_key" &> /dev/null; then
-                PUB_KEY="$input_key"
+                valid_key="$input_key"
                 log "Ключ проверен с помощью solana-keygen"
             else
                 log "Ключ не прошел проверку solana-keygen"
             fi
         # Резервная проверка формата, если solana-keygen не установлен
         elif [[ "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
-            PUB_KEY="$input_key"
+            valid_key="$input_key"
             log "Ключ проверен по формату (solana-keygen не установлен)"
         else
             log "Ключ не прошел проверку формата"
         fi
         
         # Если ключ не прошел проверку
-        if [ -z "$PUB_KEY" ]; then
+        if [ -z "$valid_key" ]; then
             attempts=$((attempts + 1))
             remaining=$((max_attempts - attempts))
+            log "Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
             echo "Ошибка: Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
             echo "Публичный ключ Solana должен содержать от 32 до 44 символов и состоять из букв и цифр."
             echo "Пример правильного ключа: 7UX2i7SucgLMQcfZ75s3VXmZZY4YRUyJN9X1RgfMoDUi"
@@ -583,21 +586,22 @@ validate_solana_key() {
                         FORCE_SKIP_PUBKEY=true
                         log "Пользователь решил продолжить без публичного ключа."
                         echo "Продолжение без публичного ключа."
+                        echo ""
                         return 0
                     fi
                 else
                     read -p "Хотите продолжить без проверки формата ключа? (y/n): " skip_validation
                     if [[ "$skip_validation" =~ ^[Yy]$ ]]; then
-                        PUB_KEY="$input_key"
+                        valid_key="$input_key"
                         echo "Продолжение с введенным ключом без проверки формата."
-                        log "Пользователь решил продолжить с непроверенным ключом: $PUB_KEY"
+                        log "Пользователь решил продолжить с непроверенным ключом: $valid_key"
                     fi
                 fi
             fi
         fi
     done
     
-    echo "$PUB_KEY"
+    echo "$valid_key"
 }
 
 # Функция для удаления .env из .gitignore
@@ -696,7 +700,7 @@ start_node() {
     
     # Запуск ноды
     log "Выполнение команды: $start_command"
-    sudo $start_command || handle_error "Не удалось запустить ноду" 19
+    eval sudo $start_command || handle_error "Не удалось запустить ноду" 19
 }
 
 # Основная часть скрипта
