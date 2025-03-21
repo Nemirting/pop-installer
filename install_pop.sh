@@ -7,25 +7,15 @@
 # Переменные
 POP_VERSION="v0.2.8"
 LOG_FILE="pop_install.log"
-LOG_MAX_SIZE_MB=10
-LOG_BACKUP_COUNT=3
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 BACKUP_DIR="pop_backups"
 MIN_RAM_MB=4096  # Минимум 4 ГБ ОЗУ
 MIN_DISK_GB=50   # Минимум 50 ГБ диска
-MIN_BACKUP_SPACE_MB=100  # Минимум 100 МБ для резервной копии
 CHECKSUM_URL="https://dl.pipecdn.app/${POP_VERSION}/pop.sha256"
 DEFAULT_REFERRAL="default"  # Замените на официальный реферальный код, если он известен
 EXCLUDE_CACHE=false  # По умолчанию включаем кэш в резервную копию
 REMOVE_ENV_FROM_GITIGNORE=false  # По умолчанию не удаляем .env из .gitignore
 SHOW_LOGS_ONLY=false  # По умолчанию не показываем только логи
-FORCE_SKIP_PUBKEY=false  # По умолчанию не пропускаем проверку публичного ключа
-USE_SCREEN=false  # По умолчанию не используем screen
-NETWORK_TYPE="mainnet"  # По умолчанию используем основную сеть
-
-# Минимальные версии зависимостей
-MIN_OPENSSL_VERSION="1.1.1"
-MIN_JQ_VERSION="1.5"
 
 # Обработка параметров командной строки
 for arg in "$@"; do
@@ -39,49 +29,11 @@ for arg in "$@"; do
         --remove-env)
             REMOVE_ENV_FROM_GITIGNORE=true
             ;;
-        --skip-pubkey)
-            FORCE_SKIP_PUBKEY=true
-            ;;
-        --use-screen)
-            USE_SCREEN=true
-            ;;
-        --testnet)
-            NETWORK_TYPE="testnet"
-            ;;
     esac
 done
 
-# Функция ротации логов
-rotate_logs() {
-    # Проверка размера лог-файла
-    if [ -f "$LOG_FILE" ]; then
-        local log_size_kb=$(du -k "$LOG_FILE" | cut -f1)
-        local log_size_mb=$((log_size_kb / 1024))
-        
-        if [ "$log_size_mb" -ge "$LOG_MAX_SIZE_MB" ]; then
-            # Сдвигаем существующие бэкапы
-            for (( i=$LOG_BACKUP_COUNT; i>0; i-- )); do
-                local j=$((i-1))
-                if [ -f "${LOG_FILE}.${j}" ]; then
-                    mv "${LOG_FILE}.${j}" "${LOG_FILE}.${i}" 2>/dev/null || true
-                fi
-            done
-            
-            # Создаем новый бэкап
-            mv "$LOG_FILE" "${LOG_FILE}.0" 2>/dev/null || true
-            touch "$LOG_FILE"
-            chmod 644 "$LOG_FILE"
-            
-            echo "$(date +"%Y-%m-%d %H:%M:%S"): Лог-файл ротирован из-за превышения размера (${log_size_mb}MB > ${LOG_MAX_SIZE_MB}MB)" >> "$LOG_FILE"
-        fi
-    fi
-}
-
-# Функция логирования с использованием logger и ротацией логов
+# Функция логирования с использованием logger
 log() {
-    # Ротация логов перед записью
-    rotate_logs
-    
     local current_time=$(date +"%Y-%m-%d %H:%M:%S")
     echo "$current_time: $1" >> "$LOG_FILE"
     echo "$current_time: $1"
@@ -99,59 +51,6 @@ handle_error() {
     log "ОШИБКА: $error_message (код: $error_code)"
     echo "ОШИБКА: $error_message"
     exit "$error_code"
-}
-
-# Функция проверки версии
-check_version() {
-    local current="$1"
-    local required="$2"
-    
-    # Разбиваем версии на компоненты
-    local IFS=.
-    local current_parts=($current)
-    local required_parts=($required)
-    
-    # Сравниваем компоненты версий
-    for ((i=0; i<${#required_parts[@]}; i++)); do
-        if [ "${current_parts[i]:-0}" -lt "${required_parts[i]:-0}" ]; then
-            return 1
-        elif [ "${current_parts[i]:-0}" -gt "${required_parts[i]:-0}" ]; then
-            return 0
-        fi
-    done
-    
-    return 0
-}
-
-# Функция проверки доступности порта
-check_port_availability() {
-    local port="$1"
-    local service_name="$2"
-    
-    if command -v netstat &> /dev/null; then
-        if netstat -tuln | grep -q ":$port "; then
-            log "Порт $port занят (используется для $service_name)"
-            echo "Предупреждение: Порт $port зан��т. Это может помешать работе ноды Pop."
-            return 1
-        fi
-    elif command -v ss &> /dev/null; then
-        if ss -tuln | grep -q ":$port "; then
-            log "Порт $port занят (используется для $service_name)"
-            echo "Предупреждение: Порт $port занят. Это может помешать работе ноды Pop."
-            return 1
-        fi
-    elif command -v lsof &> /dev/null; then
-        if lsof -i :$port | grep -q LISTEN; then
-            log "Порт $port занят (используется для $service_name)"
-            echo "Предупреждение: Порт $port занят. Это может помешать работе ноды Pop."
-            return 1
-        fi
-    else
-        log "Не удалось проверить доступность порта $port (netstat, ss и lsof не установлены)"
-        echo "Предупреждение: Не удалось проверить доступность порта $port."
-    fi
-    
-    return 0
 }
 
 # Функция проверки системных требований с использованием free и df -h
@@ -189,10 +88,6 @@ check_system_requirements() {
         log "Предупреждение: Для некоторых операций потребуются права суперпользователя"
     fi
     
-    # Проверка доступности портов
-    check_port_availability 80 "HTTP"
-    check_port_availability 443 "HTTPS"
-    
     log "Системные требования удовлетворены"
 }
 
@@ -200,19 +95,8 @@ check_system_requirements() {
 backup_configuration() {
     log "Создание резервной копии конфигурации..."
     
-    # Проверка свободного места перед созданием резервной копии
-    local free_space_mb=$(df -m . | tail -1 | awk '{print $4}')
-    if [ "$free_space_mb" -lt "$MIN_BACKUP_SPACE_MB" ]; then
-        log "Предупреждение: Недостаточно места для создания резервной копии (доступно ${free_space_mb}MB, требуется минимум ${MIN_BACKUP_SPACE_MB}MB)"
-        echo "Предупреждение: Недостаточно места для создания резервной копии. Резервная копия не будет создана."
-        return 1
-    fi
-    
     # Создание директории для резервных копий, если она не существует
     mkdir -p "$BACKUP_DIR" || handle_error "Не удалось создать директорию для резервных копий" 4
-    
-    # Установка прав доступа для директории резервных копий
-    chmod 700 "$BACKUP_DIR" || log "Предупреждение: Не удалось установить права доступа для директории резервных копий"
     
     # Создание резервной копии с временной меткой
     local backup_file="${BACKUP_DIR}/pop_config_$(date +%Y%m%d_%H%M%S).tar.gz"
@@ -220,26 +104,13 @@ backup_configuration() {
     # Архивирование всех важных файлов с учетом параметра --no-cache
     if [ "$EXCLUDE_CACHE" = false ]; then
         log "Создание полной резервной копии (включая кэш)..."
-        tar -czf "$backup_file" .env pop_install.log download_cache node_info.json 2>/dev/null || true
+        tar -czf "$backup_file" .env pop_install.log download_cache 2>/dev/null || true
     else
         log "Создание резервной копии без кэша..."
-        tar -czf "$backup_file" .env pop_install.log node_info.json 2>/dev/null || true
+        tar -czf "$backup_file" .env pop_install.log 2>/dev/null || true
     fi
-    
-    # Установка прав доступа для резервной копии
-    chmod 600 "$backup_file" || log "Предупреждение: Не удалось установить права доступа для резервной копии"
     
     log "Резервная копия создана: $backup_file"
-    
-    # Очистка старых резервных копий (оставляем только 5 последних)
-    local backup_count=$(ls -1 "${BACKUP_DIR}/pop_config_"*.tar.gz 2>/dev/null | wc -l)
-    if [ "$backup_count" -gt 5 ]; then
-        log "Очистка старых резервных копий (оставляем только 5 последних)..."
-        ls -1t "${BACKUP_DIR}/pop_config_"*.tar.gz | tail -n +6 | xargs rm -f
-        log "Старые резервные копии удалены"
-    fi
-    
-    return 0
 }
 
 # Функция проверки контрольной суммы
@@ -282,10 +153,6 @@ check_node_status() {
             ./pop --status 2>/dev/null || echo "Команда статуса недоступна"
         fi
         
-        # Проверка доступности портов 80 и 443
-        check_port_availability 80 "HTTP"
-        check_port_availability 443 "HTTPS"
-        
         # Анализ логов на наличие ошибок
         if systemctl list-unit-files | grep -q pop.service; then
             # Если используется systemd, проверяем журнал
@@ -301,35 +168,10 @@ check_node_status() {
                 echo "Предупреждение: В логах обнаружены ошибки. Проверьте логи с помощью команды:"
                 echo "grep -i 'error\\|exception\\|fail\\|critical' /var/log/pop.log"
             fi
-        elif [ -f "pop.log" ]; then
-            # Если логи пишутся в локальный файл
-            if grep -i "error\|exception\|fail\|critical" pop.log > /dev/null; then
-                log "Предупреждение: В логах обнаружены ошибки."
-                echo "Предупреждение: В логах обнаружены ошибки. Проверьте логи с помощью команды:"
-                echo "grep -i 'error\\|exception\\|fail\\|critical' pop.log"
-            fi
-        fi
-        
-        # Проверка использования ресурсов
-        if command -v top &> /dev/null; then
-            local cpu_usage=$(top -bn1 | grep "pop" | head -1 | awk '{print $9}')
-            local mem_usage=$(top -bn1 | grep "pop" | head -1 | awk '{print $10}')
-            
-            if [ -n "$cpu_usage" ] && [ -n "$mem_usage" ]; then
-                log "Использование ресурсов: CPU: ${cpu_usage}%, Память: ${mem_usage}%"
-                echo "Использование ресурсов: CPU: ${cpu_usage}%, Память: ${mem_usage}%"
-            fi
         fi
     else
         log "Предупреждение: Нода Pop не обнаружена в списке процессов"
         echo "Предупреждение: Нода Pop не обнаружена в списке процессов"
-        
-        # Проверка, запущен ли процесс в screen
-        if command -v screen &> /dev/null && screen -list | grep -q "pop"; then
-            log "Нода Pop запущена в screen сессии"
-            echo "Нода Pop запущена в screen сессии. Для подключения используйте команду:"
-            echo "screen -r pop"
-        fi
     fi
 }
 
@@ -342,54 +184,20 @@ auto_update() {
         log "Установка jq..."
         sudo apt-get update
         sudo apt-get install -y jq || handle_error "Не удалось установить jq" 7
-    else
-        # Проверка версии jq
-        local jq_version=$(jq --version | awk '{print $3}' | tr -d '"')
-        if ! check_version "$jq_version" "$MIN_JQ_VERSION"; then
-            log "Предупреждение: Установленная версия jq ($jq_version) ниже рекомендуемой ($MIN_JQ_VERSION)"
-            echo "Предупреждение: Установленная версия jq ($jq_version) ниже рекомендуемой ($MIN_JQ_VERSION)"
-        fi
     fi
     
     # Проверка доступности GitHub API
-    local latest_version=""
-    local update_check_success=false
-    
-    # Метод 1: GitHub API
-    if curl -s "https://api.github.com/repos/PipeNetwork/pop/releases/latest" > /dev/null; then
-        log "Проверка обновлений через GitHub API..."
-        latest_version=$(curl -s "https://api.github.com/repos/PipeNetwork/pop/releases/latest" | jq -r '.tag_name' 2>/dev/null)
-        
-        if [ -n "$latest_version" ] && [ "$latest_version" != "null" ]; then
-            update_check_success=true
-        else
-            log "Не удалось получить информацию о последней версии через GitHub API"
-        fi
+    if ! curl -s "https://api.github.com/repos/PipeNetwork/pop/releases/latest" > /dev/null; then
+        log "GitHub API недоступен. Продолжаем с текущей версией."
+        return
     fi
     
-    # Метод 2: Прямой запрос к сайту dl.pipecdn.app
-    if [ "$update_check_success" = false ]; then
-        log "Проверка обновлений через прямой запрос к dl.pipecdn.app..."
-        
-        # Получение списка доступных версий
-        local versions_list=$(curl -s "https://dl.pipecdn.app/" | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+' | sort -u)
-        
-        if [ -n "$versions_list" ]; then
-            # Получение последней версии
-            latest_version=$(echo "$versions_list" | sort -V | tail -1)
-            
-            if [ -n "$latest_version" ]; then
-                update_check_success=true
-            else
-                log "Не удалось получить информацию о последней версии через прямой запрос"
-            fi
-        else
-            log "Не удалось получить список версий через прямой запрос"
-        fi
-    }
+    # Получение последней версии
+    local latest_version
+    latest_version=$(curl -s "https://api.github.com/repos/PipeNetwork/pop/releases/latest" | jq -r '.tag_name' 2>/dev/null)
     
-    # Если не удалось получить информацию о последней версии
-    if [ "$update_check_success" = false ]; then
+    # Проверка успешности получения версии
+    if [ -z "$latest_version" ] || [ "$latest_version" == "null" ]; then
         log "Не удалось получить информацию о последней версии. Продолжаем с текущей версией."
         return
     fi
@@ -411,10 +219,6 @@ auto_update() {
         elif systemctl is-active --quiet pop; then
             log "Остановка сервиса ноды..."
             sudo systemctl stop pop || log "Предупреждение: Не удалось остановить сервис ноды"
-            sleep 2
-        elif command -v screen &> /dev/null && screen -list | grep -q "pop"; then
-            log "Остановка ноды в screen сессии..."
-            screen -S pop -X quit || log "Предупреждение: Не удалось остановить ноду в screen сессии"
             sleep 2
         fi
         
@@ -442,12 +246,6 @@ auto_update() {
             handle_error "Не удалось установить права на выполнение" 10
         fi
         
-        # Проверка, что файл действительно является исполняемым
-        if ! file pop | grep -q "executable"; then
-            log "Предупреждение: Файл pop не является исполняемым согласно 'file'"
-            echo "Предупреждение: Файл pop не является исполняемым согласно 'file'"
-        fi
-        
         # Обновление переменной версии
         POP_VERSION="$latest_version"
         log "Обновление успешно завершено до версии $POP_VERSION"
@@ -470,36 +268,19 @@ create_systemd_service() {
     local current_dir=$(pwd)
     local username=$(whoami)
     
-    # Создание команды запуска с учетом наличия публичного ключа
-    local start_command="${current_dir}/pop --ram ${RAM} --max-disk ${DISK} --cache-dir ${current_dir}/download_cache"
-    
-    # Добавляем публичный ключ только если он задан и не пропущен
-    if [ -n "${PUB_KEY}" ] && [ "$FORCE_SKIP_PUBKEY" = false ]; then
-        start_command="${start_command} --pubKey ${PUB_KEY}"
-    fi
-    
-    # Добавляем флаг для портов 80 и 443
-    start_command="${start_command} --enable-80-443"
-    
-    # Создание файла сервиса с улучшенными параметрами безопасности
+    # Создание файла сервиса
     sudo tee /etc/systemd/system/pop.service > /dev/null << EOL
 [Unit]
 Description=Pop Node Service
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=${start_command}
+ExecStart=${current_dir}/pop --ram ${RAM} --max-disk ${DISK} --cache-dir ${current_dir}/download_cache --pubKey ${PUB_KEY} --enable-80-443
 WorkingDirectory=${current_dir}
 StandardOutput=journal
 StandardError=journal
 Restart=always
 User=${username}
-PrivateTmp=true
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=read-only
-RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target
@@ -514,74 +295,13 @@ EOL
         log "Остановка текущей ноды для перехода на systemd сервис..."
         sudo pkill -f "pop --ram" || log "Предупреждение: Не удалось остановить ноду"
         sleep 2
-    elif command -v screen &> /dev/null && screen -list | grep -q "pop"; then
-        log "Остановка ноды в screen сессии для перехода на systemd сервис..."
-        screen -S pop -X quit || log "Предупреждение: Не удалось остановить ноду в screen сессии"
-        sleep 2
     fi
     
     # Запуск сервиса
     sudo systemctl start pop || handle_error "Не удалось запустить сервис" 22
     
-    # Проверка статуса сервиса
-    if systemctl is-active --quiet pop; then
-        log "Systemd сервис успешно запущен"
-    else
-        log "Предупреждение: Systemd сервис не запущен после попытки запуска"
-        echo "Предупреждение: Systemd сервис не запущен. Проверьте статус с помощью команды:"
-        echo "sudo systemctl status pop"
-    fi
-    
     log "Systemd сервис создан и запущен. Нода будет автоматически запускаться при перезагрузке сервера."
     echo "Systemd сервис создан и запущен. Нода будет автоматически запускаться при перезагрузке сервера."
-}
-
-# Функция для запуска ноды через screen
-create_screen_session() {
-    log "Запуск ноды Pop через screen..."
-    
-    # Проверка наличия screen
-    if ! command -v screen &> /dev/null; then
-        log "Установка screen..."
-        sudo apt-get update
-        sudo apt-get install -y screen || handle_error "Не удалось установить screen" 39
-    fi
-    
-    # Получение текущего пути
-    local current_dir=$(pwd)
-    
-    # Создание команды запуска с учетом наличия публичного ключа
-    local start_command="${current_dir}/pop --ram ${RAM} --max-disk ${DISK} --cache-dir ${current_dir}/download_cache"
-    
-    # Добавляем публичный ключ только если он задан и не пропущен
-    if [ -n "${PUB_KEY}" ] && [ "$FORCE_SKIP_PUBKEY" = false ]; then
-        start_command="${start_command} --pubKey ${PUB_KEY}"
-    fi
-    
-    # Добавляем флаг для портов 80 и 443
-    start_command="${start_command} --enable-80-443"
-    
-    # Проверка, запущена ли уже screen сессия с именем pop
-    if screen -list | grep -q "pop"; then
-        log "Обнаружена существующая screen сессия с именем pop. Останавливаем..."
-        screen -S pop -X quit || log "Предупреждение: Не удалось остановить существующую screen сессию"
-        sleep 2
-    fi
-    
-    # Запуск ноды в screen сессии
-    log "Запуск ноды в screen сессии с командой: $start_command"
-    screen -dmS pop bash -c "cd ${current_dir} && ${start_command}" || handle_error "Не удалось запустить ноду в screen сессии" 40
-    
-    # Проверка, запущена ли screen сессия
-    if screen -list | grep -q "pop"; then
-        log "Нода успешно запущена в screen сессии"
-        echo "Нода успешно запущена в screen сессии. Для подключения к сессии используйте команду:"
-        echo "screen -r pop"
-        echo "Для отключения от сессии без остановки ноды нажмите Ctrl+A, затем D"
-    else
-        log "Предупреждение: Не удалось запустить ноду в screen сессии"
-        echo "Предупреждение: Не удалось запустить ноду в screen сессии"
-    fi
 }
 
 # Функция для отображения логов ноды
@@ -592,70 +312,21 @@ show_node_logs() {
     # Проверка, настроен ли systemd сервис
     if systemctl list-unit-files | grep -q pop.service; then
         # Если используется systemd
-        log "Отображение логов через journalctl..."
         sudo journalctl -u pop -f
     elif [ -f "/var/log/pop.log" ]; then
         # Если логи пишутся в файл
-        log "Отображение логов из /var/log/pop.log..."
         tail -f /var/log/pop.log
-    elif [ -f "pop.log" ]; then
-        # Если логи пишутся в локальный файл
-        log "Отображение логов из pop.log..."
-        tail -f pop.log
-    elif command -v screen &> /dev/null && screen -list | grep -q "pop"; then
-        # Если нода запущена в screen сессии
-        log "Отображение логов из screen сессии..."
-        echo "Для просмотра логов подключитесь к screen сессии с помощью команды:"
-        echo "screen -r pop"
-        echo "Для отключения от сессии без остановки ноды нажмите Ctrl+A, затем D"
-        
-        # Предлагаем подключиться к сессии
-        read -p "Подключиться к screen сессии? (y/n): " connect_to_screen
-        if [[ "$connect_to_screen" =~ ^[Yy]$ ]]; then
-            screen -r pop
-        fi
     else
         # Если не удалось определить метод логирования, пробуем найти процесс и отслеживать его вывод
         local pop_pid=$(pgrep -f "pop --ram")
         if [ -n "$pop_pid" ]; then
-            log "Отслеживание вывода процесса Pop (PID: $pop_pid)..."
             echo "Отслеживание вывода процесса Pop (PID: $pop_pid)..."
-            
-            if command -v strace &> /dev/null; then
-                sudo strace -p "$pop_pid" -e trace=write -s 1000 2>&1 | grep -v "resume" | grep "write"
-            else
-                echo "Не удалось отследить вывод процесса. Утилита strace не установлена."
-                echo "Установите strace с помощью команды: sudo apt-get install strace"
-            fi
+            sudo strace -p "$pop_pid" -e trace=write -s 1000 2>&1 | grep -v "resume" | grep "write"
         else
             echo "Не удалось определить метод логирования ноды."
             echo "Попробуйте проверить документацию Pop для получения информации о логах."
         fi
     fi
-}
-
-# Функция проверки реферального кода
-validate_referral_code() {
-    local referral_code="$1"
-    
-    # Проверка, что реферальный код не пустой и имеет правильный формат
-    if [ -z "$referral_code" ]; then
-        return 1
-    fi
-    
-    # Проверка минимальной длины (обычно реферальные коды имеют минимальную длину)
-    if [ ${#referral_code} -lt 3 ]; then
-        echo "Реферальный код слишком короткий. Минимальная длина - 3 символа."
-        return 1
-    fi
-    
-    # Проверка на допустимые символы (буквы, цифры, дефисы, подчеркивания)
-    if ! [[ "$referral_code" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        echo "Реферальный код содержит недопустимые символы. Разрешены только буквы, цифры, дефисы и подчеркивания."
-        return 1
-    fi
-    
-    return 0
 }
 
 # Функция регистрации ноды (исправленная)
@@ -669,13 +340,7 @@ register_node() {
         read -p "Введите реферальный код (или нажмите Enter для использования кода по умолчанию): " user_referral
         
         if [ -n "$user_referral" ]; then
-            # Проверка введенного реферального кода
-            if validate_referral_code "$user_referral"; then
-                REFERRAL="$user_referral"
-            else
-                echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
-                REFERRAL="$DEFAULT_REFERRAL"
-            fi
+            REFERRAL="$user_referral"
         else
             # Используем код по умолчанию
             REFERRAL="$DEFAULT_REFERRAL"
@@ -685,20 +350,6 @@ register_node() {
         # Обновляем .env файл
         if [ -f ".env" ]; then
             sed -i "s/^REFERRAL=.*/REFERRAL=$REFERRAL/" .env || true
-            # Установка прав доступа для .env
-            chmod 600 .env || log "Предупреждение: Не удалось установить права доступа для .env"
-        fi
-    else
-        # Проверка существующего реферального кода
-        if ! validate_referral_code "$REFERRAL"; then
-            echo "Существующий реферальный код некорректен. Будет использован код по умолчанию."
-            REFERRAL="$DEFAULT_REFERRAL"
-            # Обновляем .env файл
-            if [ -f ".env" ]; then
-                sed -i "s/^REFERRAL=.*/REFERRAL=$REFERRAL/" .env || true
-                # Установка прав доступа для .env
-                chmod 600 .env || log "Предупреждение: Не удалось установить права доступа для .env"
-            fi
         fi
     fi
     
@@ -713,124 +364,10 @@ register_node() {
         fi
     fi
     
-    # Проверка наличия файла node_info.json
-    if [ -f "node_info.json" ]; then
-        log "Обнаружен существующий файл node_info.json. Нода уже может быть зарегистрирована."
-        echo "Обнаружен существующий файл node_info.json. Нода уже может быть зарегистрирована."
-        
-        # Проверка, зарегистрирована ли нода
-        if grep -q '"registered":true' node_info.json; then
-            log "Нода уже зарегистрирована согласно node_info.json."
-            echo "Нода уже зарегистрирована согласно node_info.json."
-            
-            # Если нода уже зарегистрирована, можно пропустить проверку публичного ключа
-            if [ "$FORCE_SKIP_PUBKEY" = false ]; then
-                read -p "Хотите пропустить проверку публичного ключа Solana? (y/n): " skip_pubkey
-                if [[ "$skip_pubkey" =~ ^[Yy]$ ]]; then
-                    FORCE_SKIP_PUBKEY=true
-                    log "Проверка публичного ключа Solana пропущена по запросу пользователя."
-                    echo "Проверка публичного ключа Solana пропущена."
-                fi
-            fi
-        fi
-        
-        return 0
-    fi
-    
     # Выполняем регистрацию с реферальным кодом
-    log "Выполнение регистрации с реферальным кодом: $REFERRAL"
-    local registration_output
-    local http_code
-    
-    # Получение HTTP-кода ответа и вывода команды
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://api.pipecdn.app/v1/signup?referral=$REFERRAL" 2>/dev/null || echo "000")
-    registration_output=$(./pop --signup-by-referral-route "$REFERRAL" 2>&1)
-    local registration_status=$?
-    
-    log "HTTP-код ответа сервера: $http_code"
-    log "Вывод команды регистрации: $registration_output"
-    log "Статус выполнения команды: $registration_status"
-    
-    # Проверка результата регистрации
-    if [ $registration_status -ne 0 ] || echo "$registration_output" | grep -q "Invalid referral code\|Rate limit\|error\|Error\|failed"; then
-        log "Ошибка при регистрации ноды: $registration_output (HTTP-код: $http_code)"
-        echo "Ошибка при регистрации ноды: $registration_output"
-        
-        # Проверка на ограничение по частоте запросов
-        if echo "$registration_output" | grep -q "Rate limit" || [ "$http_code" = "429" ]; then
-            log "Обнаружено ограничение по частоте запросов. Попробуйте повторить через час или с другого IP-адреса."
-            echo "Обнаружено ограничение по частоте запросов. Попробуйте повторить через час или с другого IP-адреса."
-            echo "Вы можете продолжить установку, но нода не будет зарегистрирована."
-            read -p "Продолжить установку без регистрации? (y/n): " continue_without_registration
-            if [[ "$continue_without_registration" =~ ^[Yy]$ ]]; then
-                log "Продолжение установки без регистрации."
-                return 0
-            else
-                handle_error "Регистрация ноды не удалась из-за ограничения по частоте запросов" 17
-            fi
-        fi
-        
-        # Проверка на неверный реферальный код
-        if echo "$registration_output" | grep -q "Invalid referral code" || [ "$http_code" = "400" ]; then
-            log "Неверный реферальный код. Попробуйте использовать другой код."
-            echo "Неверный реферальный код. Попробуйте использовать другой код."
-            read -p "Введите другой реферальный код (или нажмите Enter для использования кода по умолчанию): " new_referral
-            
-            if [ -n "$new_referral" ]; then
-                if validate_referral_code "$new_referral"; then
-                    REFERRAL="$new_referral"
-                else
-                    echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
-                    REFERRAL="$DEFAULT_REFERRAL"
-                fi
-            else
-                REFERRAL="$DEFAULT_REFERRAL"
-            fi
-            
-            # Обновляем .env файл
-            if [ -f ".env" ]; then
-                sed -i "s/^REFERRAL=.*/REFERRAL=$REFERRAL/" .env || true
-                # Установка прав доступа для .env
-                chmod 600 .env || log "Предупреждение: Не удалось установить права доступа для .env"
-            fi
-            
-            # Повторная попытка регистрации
-            log "Повторная попытка регистрации с кодом: $REFERRAL"
-            http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://api.pipecdn.app/v1/signup?referral=$REFERRAL" 2>/dev/null || echo "000")
-            registration_output=$(./pop --signup-by-referral-route "$REFERRAL" 2>&1)
-            registration_status=$?
-            
-            log "HTTP-код ответа сервера (повторная попытка): $http_code"
-            log "Вывод команды регистрации (повторная попытка): $registration_output"
-            log "Статус выполнения команды (повторная попытка): $registration_status"
-            
-            if [ $registration_status -ne 0 ] || echo "$registration_output" | grep -q "Invalid referral code\|Rate limit\|error\|Error\|failed"; then
-                log "Повторная попытка регистрации не удалась: $registration_output (HTTP-код: $http_code)"
-                echo "Повторная попытка регистрации не удалась: $registration_output"
-                echo "Вы можете продолжить установку, но нода не будет зарегистрирована."
-                read -p "Продолжить установку без регистрации? (y/n): " continue_without_registration
-                if [[ "$continue_without_registration" =~ ^[Yy]$ ]]; then
-                    log "Продолжение установки без регистрации."
-                    return 0
-                else
-                    handle_error "Регистрация ноды не удалась" 17
-                fi
-            fi
-        else
-            # Другие ошибки
-            echo "Вы можете продолжить установку, но нода не будет зарегистрирована."
-            read -p "Продолжить установку без регистрации? (y/n): " continue_without_registration
-            if [[ "$continue_without_registration" =~ ^[Yy]$ ]]; then
-                log "Продолжение установки без регистрации."
-                return 0
-            else
-                handle_error "Регистрация ноды не удалась" 17
-            fi
-        fi
-    fi
+    ./pop --signup-by-referral-route "$REFERRAL" || handle_error "Не удалось зарегистрировать ноду с реферальным кодом: $REFERRAL" 17
     
     log "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
-    echo "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
 }
 
 # Функция проверки публичного ключа Solana с исправленной логикой
@@ -838,102 +375,48 @@ validate_solana_key() {
     local input_key="$1"
     local max_attempts="$2"
     local attempts=0
-    local valid_key=""
+    local PUB_KEY=""
     
-    # Если установлен флаг пропуска проверки публичного ключа, возвращаем пустую строку
-    if [ "$FORCE_SKIP_PUBKEY" = true ]; then
-        log "Проверка публичного ключа Solana пропущена."
-        return 0
-    fi
-    
-    # Перенаправляем вывод ошибок в лог-файл, чтобы они не попадали в stdout
-    exec 3>&2 # Сохраняем stderr
-    exec 2>>"$LOG_FILE" # Перенаправляем stderr в лог-файл
-    
-    while [ -z "$valid_key" ] && [ $attempts -lt $max_attempts ]; do
+    while [ -z "$PUB_KEY" ] && [ $attempts -lt $max_attempts ]; do
         if [ $attempts -gt 0 ]; then
             read -p "Введите ваш публичный ключ Solana: " input_key
-        fi
-        
-        # Проверка на пустой ввод
-        if [ -z "$input_key" ]; then
-            log "Публичный ключ не может быть пустым."
-            echo "Публичный ключ не может быть пустым."
-            attempts=$((attempts + 1))
-            continue
-        fi
-        
-        # Проверка соответствия ключа выбранной сети
-        if [ "$NETWORK_TYPE" = "mainnet" ]; then
-            # Для mainnet ключи обычно начинаются с определенных символов
-            if [[ ! "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z] ]]; then
-                log "Ключ не соответствует формату ключа основной сети Solana"
-                echo "Предупреждение: Ключ не соответствует формату ключа основной сети Solana"
-            fi
-        elif [ "$NETWORK_TYPE" = "testnet" ]; then
-            # Для testnet могут быть другие правила
-            if [[ ! "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z] ]]; then
-                log "Ключ не соответствует формату ключа тестовой сети Solana"
-                echo "Предупреждение: Ключ не соответствует формату ключа тестовой сети Solana"
-            fi
         fi
         
         # Проверка с помощью solana-keygen, если он установлен
         if command -v solana-keygen &> /dev/null; then
             if solana-keygen verify "$input_key" &> /dev/null; then
-                valid_key="$input_key"
+                PUB_KEY="$input_key"
                 log "Ключ проверен с помощью solana-keygen"
             else
                 log "Ключ не прошел проверку solana-keygen"
             fi
         # Резервная проверка формата, если solana-keygen не установлен
         elif [[ "$input_key" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
-            valid_key="$input_key"
+            PUB_KEY="$input_key"
             log "Ключ проверен по формату (solana-keygen не установлен)"
         else
             log "Ключ не прошел проверку формата"
         fi
         
         # Если ключ не прошел проверку
-        if [ -z "$valid_key" ]; then
+        if [ -z "$PUB_KEY" ]; then
             attempts=$((attempts + 1))
             remaining=$((max_attempts - attempts))
-            log "Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
             echo "Ошибка: Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
-            echo "Публичный ключ Solana должен содержать от 32 до 44 символов и состоять из букв и цифр."
-            echo "Пример правильного ключа: 7UX2i7SucgLMQcfZ75s3VXmZZY4YRUyJN9X1RgfMoDUi"
             
             if [ $attempts -eq $max_attempts ]; then
                 echo "Достигнуто максимальное количество попыток."
-                
-                # Проверка, зарегистрирована ли нода
-                if [ -f "node_info.json" ] && grep -q '"registered":true' node_info.json; then
-                    echo "Нода уже зарегистрирована. Вы можете продолжить без публичного ключа."
-                    read -p "Продолжить без публичного ключа? (y/n): " skip_validation
-                    if [[ "$skip_validation" =~ ^[Yy]$ ]]; then
-                        FORCE_SKIP_PUBKEY=true
-                        log "Пользователь решил продолжить без публичного ключа."
-                        echo "Продолжение без публичного ключа."
-                        valid_key=""
-                        break
-                    fi
-                else
-                    read -p "Хотите продолжить без проверки формата ключа? (y/n): " skip_validation
-                    if [[ "$skip_validation" =~ ^[Yy]$ ]]; then
-                        valid_key="$input_key"
-                        echo "Продолжение с введенным ключом без проверки формата."
-                        log "Пользователь решил продолжить с непроверенным ключом: $valid_key"
-                    fi
+                read -p "Хотите продолжить без проверки формата ключа? (y/n): " skip_validation
+                if [[ "$skip_validation" =~ ^[Yy]$ ]]; then
+                    PUB_KEY="$input_key"
+                    echo "Продолжение с введенным ключом без проверки формата."
+                    log "Пользователь решил продолжить с непроверенным ключом: $PUB_KEY"
                 fi
             fi
         fi
     done
     
-    # Восстанавливаем stderr
-    exec 2>&3
-    exec 3>&-
-    
-    echo "$valid_key"
+    echo "$PUB_KEY"
 }
 
 # Функция для удаления .env из .gitignore
@@ -947,130 +430,6 @@ remove_env_from_gitignore() {
     else
         log ".gitignore не найден"
         echo ".gitignore не найден"
-    fi
-}
-
-# Функция проверки и исправления файла .env
-validate_env_file() {
-    log "Проверка файла .env..."
-    
-    local env_valid=true
-    local pub_key_found=false
-    local referral_found=false
-    local ram_found=false
-    local disk_found=false
-    local line_number=0
-    
-    # Проверка существования файла
-    if [ ! -f ".env" ]; then
-        log "Файл .env не найден."
-        return 1
-    fi
-    
-    # Проверка прав доступа
-    local file_perms=$(stat -c "%a" .env)
-    if [ "$file_perms" != "600" ]; then
-        log "Неправильные права доступа для .env: $file_perms. Установка правильных прав..."
-        chmod 600 .env || log "Предупреждение: Не удалось установить права доступа для .env"
-    fi
-    
-    # Проверка содержимого файла
-    while IFS= read -r line || [ -n "$line" ]; do
-        line_number=$((line_number + 1))
-        
-        # Пропускаем пустые строки и комментарии
-        if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then
-            continue
-        fi
-        
-        # Проверка формата KEY=VALUE
-        if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-            log "Некорректная строка в .env (строка $line_number): $line"
-            env_valid=false
-            break
-        fi
-        
-        # Проверка наличия необходимых переменных
-        if [[ "$line" =~ ^PUB_KEY= ]]; then
-            pub_key_found=true
-            # Проверка, что значение не пустое
-            if [[ "$line" == "PUB_KEY=" ]]; then
-                log "Пустое значение PUB_KEY в .env (строка $line_number)"
-                env_valid=false
-                break
-            fi
-        elif [[ "$line" =~ ^REFERRAL= ]]; then
-            referral_found=true
-        elif [[ "$line" =~ ^RAM= ]]; then
-            ram_found=true
-        elif [[ "$line" =~ ^DISK= ]]; then
-            disk_found=true
-        fi
-    done < ".env"
-    
-    # Проверка наличия всех необходимых переменных
-    if [ "$pub_key_found" = false ]; then
-        log "В файле .env отсутствует переменная PUB_KEY"
-        env_valid=false
-    fi
-    
-    if [ "$referral_found" = false ]; then
-        log "В файле .env отсутствует переменная REFERRAL"
-        env_valid=false
-    fi
-    
-    if [ "$ram_found" = false ]; then
-        log "В файле .env отсутствует переменная RAM"
-        env_valid=false
-    }
-    
-    if [ "$disk_found" = false ]; then
-        log "В файле .env отсутствует переменная DISK"
-        env_valid=false
-    fi
-    
-    # Если файл некорректен, создаем резервную копию и возвращаем ошибку
-    if [ "$env_valid" = false ]; then
-        log "Файл .env некорректен. Создание резервной копии..."
-        mv .env .env.backup.$(date +%Y%m%d_%H%M%S) || true
-        return 1
-    fi
-    
-    log "Файл .env проверен и корректен"
-    return 0
-}
-
-# Функция запуска ноды
-start_node() {
-    log "Запуск ноды..."
-    
-    # Базовая команда запуска
-    local start_command="./pop --ram $RAM --max-disk $DISK --cache-dir download_cache"
-    
-    # Добавляем публичный ключ только если он задан и не пропущен
-    if [ -n "${PUB_KEY}" ] && [ "$FORCE_SKIP_PUBKEY" = false ]; then
-        log "Добавление публичного ключа в команду запуска: ${PUB_KEY}"
-        start_command="${start_command} --pubKey ${PUB_KEY}"
-    else
-        log "Запуск без публичного ключа (ключ пропущен или не задан)"
-    fi
-    
-    # Добавляем флаг для портов 80 и 443
-    start_command="${start_command} --enable-80-443"
-    
-    # Проверка доступности портов перед запуском
-    check_port_availability 80 "HTTP"
-    check_port_availability 443 "HTTPS"
-    
-    # Запуск ноды
-    log "Выполнение команды: $start_command"
-    
-    # Если выбран запуск через screen
-    if [ "$USE_SCREEN" = true ]; then
-        create_screen_session
-    else
-        # Обычный запуск
-        sudo bash -c "$start_command" || handle_error "Не удалось запустить ноду" 19
     fi
 }
 
@@ -1122,12 +481,6 @@ main() {
         handle_error "Не удалось установить права на выполнение" 14
     fi
     
-    # Проверка, что файл действительно является исполняемым
-    if ! file pop | grep -q "executable"; then
-        log "Предупреждение: Файл pop не является исполняемым согласно 'file'"
-        echo "Предупреждение: Файл pop не является исполняемым согласно 'file'"
-    fi
-    
     # Проверка зависимостей
     log "Проверка зависимостей..."
 
@@ -1154,13 +507,6 @@ main() {
     if ! command -v jq &> /dev/null; then
         log "Установка jq..."
         sudo apt-get install -y jq || handle_error "Не удалось установить jq" 15
-    else
-        # Проверка версии jq
-        local jq_version=$(jq --version | awk '{print $3}' | tr -d '"')
-        if ! check_version "$jq_version" "$MIN_JQ_VERSION"; then
-            log "Предупреждение: Установленная версия jq ($jq_version) ниже рекомендуемой ($MIN_JQ_VERSION)"
-            echo "Предупреждение: Установленная версия jq ($jq_version) ниже рекомендуемой ($MIN_JQ_VERSION)"
-        fi
     fi
 
     # Проверка git
@@ -1203,13 +549,6 @@ main() {
     if ! command -v openssl &> /dev/null; then
         log "Установка openssl..."
         sudo apt-get install -y openssl || handle_error "Не удалось установить openssl" 38
-    else
-        # Проверка версии openssl
-        local openssl_version=$(openssl version | awk '{print $2}')
-        if ! check_version "$openssl_version" "$MIN_OPENSSL_VERSION"; then
-            log "Предупреждение: Установленная версия OpenSSL ($openssl_version) ниже рекомендуемой ($MIN_OPENSSL_VERSION)"
-            echo "Предупреждение: Установленная версия OpenSSL ($openssl_version) ниже рекомендуемой ($MIN_OPENSSL_VERSION)"
-        fi
     fi
 
     # Проверка solana-keygen (опционально)
@@ -1225,75 +564,20 @@ main() {
     log "Создание директории для кэша..."
     mkdir -p download_cache || handle_error "Не удалось создать директорию для кэша" 16
     
-    # Установка прав доступа для директории кэша
-    chmod 755 download_cache || log "Предупреждение: Не удалось установить права доступа для директории кэша"
-    
-    # Проверка наличия и корректности файла конфигурации .env
-    if [ -f ".env" ]; then
-        log "Файл .env найден. Проверка корректности..."
-        if validate_env_file; then
-            log "Файл .env корректен. Используем существующие данные."
-            source .env
-        else
-            log "Файл .env некорректен. Необходимо ввести данные заново."
-            create_new_env_file=true
-        fi
-    else
+    # Проверка наличия файла конфигурации .env
+    if [ ! -f ".env" ]; then
         log "Файл .env не найден. Необходимо ввести данные для конфигурации."
-        create_new_env_file=true
-    fi
-    
-    # Проверка, зарегистрирована ли нода
-    if [ -f "node_info.json" ] && grep -q '"registered":true' node_info.json; then
-        log "Нода уже зарегистрирована согласно node_info.json."
-        echo "Нода уже зарегистрирована согласно node_info.json."
         
-        # Если нода уже зарегистрирована, предлагаем пропустить проверку публичного ключа
-        if [ "$FORCE_SKIP_PUBKEY" = false ]; then
-            read -p "Хотите пропустить проверку публичного ключа Solana? (y/n): " skip_pubkey
-            if [[ "$skip_pubkey" =~ ^[Yy]$ ]]; then
-                FORCE_SKIP_PUBKEY=true
-                log "Проверка публичного ключа Solana пропущена по запросу пользователя."
-                echo "Проверка публичного ключа Solana пропущена."
-            fi
-        fi
-    fi
-    
-    # Создание нового файла .env при необходимости
-    if [ "${create_new_env_file:-false}" = true ]; then
-        log "Создание нового файла .env..."
+        # Запрос публичного ключа с проверкой формата
+        read -p "Введите ваш публичный ключ Solana: " input_key
+        PUB_KEY=$(validate_solana_key "$input_key" 3)
         
-        # Запрос публичного ключа с проверкой формата, если не пропущен
-        if [ "$FORCE_SKIP_PUBKEY" = false ]; then
-            echo "Введите ваш публичный ключ Solana (32-44 символа, буквы и цифры)."
-            echo "Пример: 7UX2i7SucgLMQcfZ75s3VXmZZY4YRUyJN9X1RgfMoDUi"
-            read -p "Публичный ключ Solana: " input_key
-            PUB_KEY=$(validate_solana_key "$input_key" 3)
-            
-            # Если ключ не был получен и не пропущен, выходим с ошибкой
-            if [ -z "$PUB_KEY" ] && [ "$FORCE_SKIP_PUBKEY" = false ]; then
-                handle_error "Не удалось получить корректный публичный ключ Solana" 24
-            fi
-        else
-            log "Проверка публичного ключа Solana пропущена."
-            echo "Проверка публичного ключа Solana пропущена."
-            PUB_KEY=""
+        # Если ключ не был получен, выходим с ошибкой
+        if [ -z "$PUB_KEY" ]; then
+            handle_error "Не удалось получить корректный публичный ключ Solana" 24
         fi
         
-        # Запрос реферального кода с проверкой
-        echo "Введите реферальный код (минимум 3 символа, буквы, цифры, дефисы или подчеркивания)."
-        read -p "Реферальный код (или нажмите Enter для использования кода по умолчанию): " input_referral
-        
-        if [ -n "$input_referral" ]; then
-            if validate_referral_code "$input_referral"; then
-                REFERRAL="$input_referral"
-            else
-                echo "Введен некорректный реферальный код. Будет использован код по умолчанию."
-                REFERRAL="$DEFAULT_REFERRAL"
-            fi
-        else
-            REFERRAL="$DEFAULT_REFERRAL"
-        fi
+        read -p "Введите вашу реферальную ссылку (если есть, иначе оставьте пустым): " REFERRAL
         
         # Получение информации о системной памяти с использованием free
         local total_ram_mb=$(free -m | awk 'NR==2{print $2}')
@@ -1320,11 +604,8 @@ main() {
             while [ "$ram_validated" = false ] && [ $ram_attempts -lt $max_ram_attempts ]; do
                 read -p "Введите размер оперативной памяти для ноды (в ГБ, целое число): " RAM_INPUT
                 
-                # Очистка ввода от нечисловых символов
-                RAM_INPUT=$(echo "$RAM_INPUT" | tr -cd '0-9')
-                
                 # Проверяем, что введено целое число
-                if [ -n "$RAM_INPUT" ]; then
+                if [[ "$RAM_INPUT" =~ ^[0-9]+$ ]]; then
                     if [ "$RAM_INPUT" -ge "$min_ram_gb" ]; then
                         if [ "$RAM_INPUT" -gt "$total_ram_gb" ]; then
                             echo "Предупреждение: Указанный размер ОЗУ (${RAM_INPUT}GB) превышает доступный (${total_ram_gb}GB)."
@@ -1343,7 +624,7 @@ main() {
                         echo "Ошибка: Размер ОЗУ должен быть не менее ${min_ram_gb}GB."
                     fi
                 else
-                    echo "Ошибка: Размер ОЗУ должен быть числом."
+                    echo "Ошибка: Введите целое число без дополнительных символов."
                 fi
                 
                 ram_attempts=$((ram_attempts + 1))
@@ -1387,11 +668,8 @@ main() {
             while [ "$disk_validated" = false ] && [ $disk_attempts -lt $max_disk_attempts ]; do
                 read -p "Введите максимальный размер диска для ноды (в ГБ, целое число): " DISK_INPUT
                 
-                # Очистка ввода от нечисловых символов
-                DISK_INPUT=$(echo "$DISK_INPUT" | tr -cd '0-9')
-                
                 # Проверяем, что введено целое число
-                if [ -n "$DISK_INPUT" ]; then
+                if [[ "$DISK_INPUT" =~ ^[0-9]+$ ]]; then
                     if [ "$DISK_INPUT" -ge "$min_disk_gb" ]; then
                         if (( $(echo "$DISK_INPUT > $free_disk_gb" | bc -l) )); then
                             echo "Предупреждение: Указанный размер диска (${DISK_INPUT}GB) превышает доступный (${free_disk_gb}GB)."
@@ -1410,7 +688,7 @@ main() {
                         echo "Ошибка: Размер диска должен быть не менее ${min_disk_gb}GB."
                     fi
                 else
-                    echo "Ошибка: Размер диска должен быть числом."
+                    echo "Ошибка: Введите целое число без дополнительных символов."
                 fi
                 
                 disk_attempts=$((disk_attempts + 1))
@@ -1429,9 +707,6 @@ main() {
         echo "RAM=$RAM" >> .env
         echo "DISK=$DISK" >> .env
         
-        # Установка прав доступа для .env
-        chmod 600 .env || log "Предупреждение: Не удалось установить права доступа для .env"
-        
         # Добавление .env в .gitignore (если необходимо)
         if [ -f ".gitignore" ]; then
             grep -q "^.env$" .gitignore || echo ".env" >> .gitignore
@@ -1440,6 +715,9 @@ main() {
         fi
         
         log "Файл конфигурации .env создан"
+    else
+        log "Файл .env найден. Используем существующие данные."
+        source .env
     fi
     
     # Создание резервной копии конфигурации
@@ -1448,25 +726,16 @@ main() {
     # Регистрация ноды (используем новую функцию)
     register_node
     
-    # Запрос о методе запуска ноды
-    echo "Выберите метод запуска ноды:"
-    echo "1. Systemd сервис (автозапуск при перезагрузке сервера)"
-    echo "2. Screen сессия (продолжает работать после закрытия терминала)"
-    echo "3. Обычный запуск (остановится при закрытии терминала)"
-    read -p "Выберите метод запуска (1/2/3): " launch_method
+    # Запрос о создании systemd сервиса для автозапуска
+    read -p "Настроить автозапуск ноды при перезагрузке сервера? (y/n): " setup_autostart
     
-    case $launch_method in
-        1)
-            create_systemd_service
-            ;;
-        2)
-            USE_SCREEN=true
-            start_node
-            ;;
-        *)
-            start_node
-            ;;
-    esac
+    if [[ "$setup_autostart" =~ ^[Yy]$ ]]; then
+        create_systemd_service
+    else
+        # Запуск ноды напрямую, если не выбран автозапуск
+        log "Запуск ноды..."
+        sudo ./pop --ram "$RAM" --max-disk "$DISK" --cache-dir download_cache --pubKey "$PUB_KEY" --enable-80-443 || handle_error "Не удалось запустить ноду" 19
+    fi
     
     # Проверка статуса ноды
     sleep 5  # Даем ноде время на запуск
@@ -1484,9 +753,6 @@ main() {
         if systemctl list-unit-files | grep -q pop.service; then
             echo "Для просмотра логов ноды в будущем используйте команду:"
             echo "sudo journalctl -u pop -f"
-        elif command -v screen &> /dev/null && screen -list | grep -q "pop"; then
-            echo "Для просмотра логов ноды в будущем подключитесь к screen сессии с помощью команды:"
-            echo "screen -r pop"
         else
             echo "Для просмотра логов ноды в будущем запустите скрипт с параметром --logs:"
             echo "bash $(basename "$0") --logs"
