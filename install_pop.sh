@@ -106,7 +106,7 @@ backup_configuration() {
         log "Создание полной резервной копии (включая кэш)..."
         tar -czf "$backup_file" .env pop_install.log download_cache 2>/dev/null || true
     else
-        log "Создание резервной копии без кэша..."
+        log "Создание резерв��ой копии без кэша..."
         tar -czf "$backup_file" .env pop_install.log 2>/dev/null || true
     fi
     
@@ -333,6 +333,18 @@ show_node_logs() {
 register_node() {
     log "Регистрация ноды..."
     
+    # Проверка, была ли нода уже зарегистрирована
+    if [ -f "node_info.json" ]; then
+        local registered
+        registered=$(grep -o '"registered":true' node_info.json 2>/dev/null)
+        
+        if [ -n "$registered" ]; then
+            log "Нода уже зарегистрирована. Пропускаем этап регистрации."
+            echo "Нода уже зарегистрирована. Пропускаем этап регистрации."
+            return 0
+        fi
+    fi
+    
     # Проверка наличия реферального кода
     if [ -z "$REFERRAL" ]; then
         # Если реферальный код не указан, запрашиваем его у пользователя
@@ -365,22 +377,42 @@ register_node() {
     fi
     
     # Выполняем регистрацию с реферальным кодом
-    ./pop --signup-by-referral-route "$REFERRAL" || handle_error "Не удалось зарегистрировать ноду с реферальным кодом: $REFERRAL" 17
+    local registration_output
+    registration_output=$(./pop --signup-by-referral-route "$REFERRAL" 2>&1)
+    local registration_status=$?
+    
+    # Проверяем вывод на наличие ошибки ограничения частоты запросов
+    if echo "$registration_output" | grep -q "Rate limit"; then
+        log "Обнаружено ограничение частоты запросов. Регистрация будет выполнена при запуске ноды."
+        echo "Обнаружено ограничение частоты запросов. Регистрация будет выполнена при запуске ноды."
+        return 0
+    elif [ $registration_status -ne 0 ]; then
+        log "Предупреждение: Не удалось зарегистрировать ноду с реферальным кодом: $REFERRAL"
+        echo "Предупреждение: Не удалось зарегистрировать ноду с реферальным кодом: $REFERRAL"
+        echo "Регистрация будет выполнена при запуске ноды."
+        return 0
+    fi
     
     log "Нода успешно зарегистрирована с реферальным кодом: $REFERRAL"
+    return 0
 }
 
-# Функция проверки публичного ключа Solana с исправленной логикой
+# Функция проверки публичного ключа Solana с улучшенной логикой
 validate_solana_key() {
     local input_key="$1"
     local max_attempts="$2"
     local attempts=0
     local PUB_KEY=""
     
+    echo "Пример правильного формата ключа Solana: 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
+    
     while [ -z "$PUB_KEY" ] && [ $attempts -lt $max_attempts ]; do
         if [ $attempts -gt 0 ]; then
             read -p "Введите ваш публичный ключ Solana: " input_key
         fi
+        
+        # Очистка ключа от лишних пробелов
+        input_key=$(echo "$input_key" | xargs)
         
         # Проверка с помощью solana-keygen, если он установлен
         if command -v solana-keygen &> /dev/null; then
@@ -403,6 +435,7 @@ validate_solana_key() {
             attempts=$((attempts + 1))
             remaining=$((max_attempts - attempts))
             echo "Ошибка: Неверный формат публичного ключа Solana. Осталось попыток: $remaining"
+            echo "Ключ должен содержать 32-44 символа и состоять из букв и цифр."
             
             if [ $attempts -eq $max_attempts ]; then
                 echo "Достигнуто максимальное количество попыток."
@@ -764,7 +797,32 @@ main() {
     else
         # Запуск ноды напрямую, если не выбран автозапуск
         log "Запуск ноды..."
-        sudo ./pop --ram "$RAM" --max-disk "$DISK" --cache-dir download_cache --pubKey "$PUB_KEY" --enable-80-443 || handle_error "Не удалось запустить ноду" 19
+        echo "Запуск ноды может занять некоторое время. Пожалуйста, подождите..."
+
+        # Запускаем ноду в фоновом режиме с перенаправлением вывода
+        sudo ./pop --ram "$RAM" --max-disk "$DISK" --cache-dir download_cache --pubKey "$PUB_KEY" --enable-80-443 > pop_output.log 2>&1 &
+        POP_PID=$!
+
+        # Ждем некоторое время, чтобы нода успела запуститься
+        sleep 10
+
+        # Проверяем, запущена ли нода
+        if ps -p $POP_PID > /dev/null; then
+            log "Нода успешно запущена с PID: $POP_PID"
+            echo "Нода успешно запущена с PID: $POP_PID"
+        else
+            # Проверяем лог на наличие ошибок
+            if grep -q "Rate limit" pop_output.log; then
+                log "Предупреждение: Обнаружено ограничение частоты запросов. Попробуйте запустить ноду позже."
+                echo "Предупреждение: Обнаружено ограничение частоты запросов. Попробуйте запустить ноду позже."
+                echo "Рекомендуется подождать 1 час перед следующей попыткой."
+            elif grep -q "Error" pop_output.log; then
+                log "ОШИБКА: Не удалось запустить ноду. Проверьте лог: pop_output.log"
+                echo "ОШИБКА: Не удалось запустить ноду. Проверьте лог: pop_output.log"
+            else
+                handle_error "Не удалось запустить ноду. Проверьте лог: pop_output.log" 19
+            fi
+        fi
     fi
     
     # Проверка статуса ноды
